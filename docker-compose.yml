@@ -16,9 +16,10 @@ services:
 
   rustfs:
     # S3-compatible object store for uploaded images (SPEC.md §5).
-    # NOTE: verify the official image name/tag and default port against
-    # https://rustfs.com before deploying — filled in here as a
-    # reasonable placeholder for local development.
+    # Verified locally: image pulls, S3 API on :9000, admin console on
+    # :9001, and RUSTFS_ROOT_USER/RUSTFS_ROOT_PASSWORD are honored
+    # (rustfs also accepts RUSTFS_ACCESS_KEY/SECRET_KEY or the
+    # MINIO_ROOT_USER/PASSWORD names, if that's ever preferred instead).
     image: rustfs/rustfs:latest
     restart: unless-stopped
     environment:

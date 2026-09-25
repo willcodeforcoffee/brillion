@@ -18,15 +18,9 @@ Dockerfile     Multi-stage build: frontend assets + backend binary
 
 ## Backend
 
-Requires a Rust toolchain (stable) — not installed in the environment
-this scaffold was generated in, so `cargo build`/`test`/`clippy` have
-**not** been run against this code yet. Run these before trusting it:
-
-```sh
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --all-targets
-```
+Requires a Rust toolchain (stable). Verified working: `cargo build`,
+`test`, `clippy --all-targets -- -D warnings`, and `fmt --check` all pass
+clean on this scaffold.
 
 ```sh
 cargo run -p brillion -- serve            # GET /health on :3000
@@ -48,10 +42,14 @@ cp .env.example .env   # then fill in real secrets
 docker compose up --build
 ```
 
-The `rustfs` image/port in `docker-compose.yml` are placeholders pending
-a check against [RustFS's own docs](https://rustfs.com) — verify before
-relying on them (see SPEC.md §5 and the `NOTE:` comments in
-`docker-compose.yml` / `.env.example`).
+Verified working end-to-end: `docker compose up --build` brings up all
+four services (postgres healthy, rustfs, backend, caddy proxy); the
+proxy correctly routes `/health` to `backend` and `/media/*` to `rustfs`
+on its S3 API port (`:9000`; console on `:9001`), honoring
+`RUSTFS_ROOT_USER`/`RUSTFS_ROOT_PASSWORD`. Note the backend doesn't
+actually talk to Postgres or RustFS at runtime yet — that lands in
+phase 1 — so this only confirms the container topology and networking,
+not application-level integration.
 
 ## CI
 
