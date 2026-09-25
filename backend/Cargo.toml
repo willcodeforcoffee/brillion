@@ -1,0 +1,26 @@
+[package]
+name = "brillion"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "brillion"
+path = "src/main.rs"
+
+[dependencies]
+activitypub = { path = "../activitypub" }
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+axum = "0.7"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"

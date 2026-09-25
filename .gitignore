@@ -1,0 +1,22 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# RustFS / Postgres local data (if ever bind-mounted instead of named volumes)
+/data/

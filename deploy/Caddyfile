@@ -1,0 +1,12 @@
+# Local/dev: plain HTTP on :80. For production, replace ":80" below with
+# your real domain (e.g. "brillion.example.com") so Caddy provisions and
+# renews a Let's Encrypt certificate automatically — see SPEC.md §10.
+:80 {
+	handle /media/* {
+		reverse_proxy rustfs:9000
+	}
+
+	handle {
+		reverse_proxy backend:3000
+	}
+}
