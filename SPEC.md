@@ -101,7 +101,7 @@ itself is served with a normal read/write web UI.
 
 - `GET /users/:username` — content-negotiated:
   - `Accept: application/activity+json` or `application/ld+json; profile="https://www.w3.org/ns/activitystreams"` → AS2 `Person` JSON-LD document (public key, inbox, outbox, followers, following URLs).
-  - Otherwise → HTML profile page (server-rendered fallback or SPA shell for the React app to hydrate).
+  - Otherwise → the SPA shell (`index.html`); the React app's client-side router (§11) renders the profile page from there.
 - Each local actor has an RSA keypair generated at creation time (private
   key stored server-side only, public key embedded in the actor document)
   for HTTP Signatures.
@@ -186,18 +186,20 @@ itself is served with a normal read/write web UI.
 - `GET /` — site homepage: paginated, newest-first list of **published
   posts from all local users** (not just one author) — title, excerpt/
   summary, author byline + avatar, published date, link to the full post.
-  Plain server-rendered HTML (see open decision in §12), independent of
-  any single actor's outbox.
+  **Decided (§11/§12): client-only SPA**, not server-rendered — this is
+  the React router's `/` route (`HomePage`), fetching via GraphQL;
+  independent of any single actor's outbox.
 - `GET /users/:username` — per-author blog page: the same list, scoped to
   one actor's posts (this is the same URL as the content-negotiated AS2
   `Person` document — see §3.2 — the HTML branch of that content
-  negotiation *is* this page).
+  negotiation serves the SPA shell, which renders this page via
+  `ActorProfilePage`).
 - `GET /users/:username/:slug` — full post permalink. Content-negotiated:
   `Accept: application/activity+json` → the AS2 `Article` object (§3.5);
-  otherwise → rendered HTML with the post body and author byline.
+  otherwise → the SPA shell, rendering via `PostPage`.
 - `GET /tags/:tag` (optional, v1.1) — posts filtered by tag; needs a
   `tags`/`post_tags` schema addition not otherwise required in v1 —
-  flagged as an open decision (§12).
+  deferred to v1.1 (§12).
 - Pagination: `?page=N` (or a `?before=<post_id>` cursor) on all list
   pages, consistent with the GraphQL `posts` query's cursor pagination
   (§6.1).
@@ -290,9 +292,9 @@ container, not on the application container's local disk — keeps
 
 ### 5.3 Serving
 
-- RustFS serves the objects directly (public-read bucket, or presigned
-  GET URLs if the bucket is kept private — see open decision §12); the
-  `backend`/`worker` containers are not in the read path for images.
+- RustFS serves the objects directly. **Decided (§12): public-read
+  bucket** (not presigned GET URLs) — the `backend`/`worker` containers
+  are not in the read path for images.
 - The reverse proxy (`caddy`/`nginx`, §10) fronts RustFS on a path like
   `/media/*` so images are served from the blog's own domain — needed so
   AS2 `Image` `url`s and OpenGraph image tags resolve to a first-party
@@ -308,11 +310,10 @@ container, not on the application container's local disk — keeps
   `{"type": "Image", "mediaType": "image/jpeg", "url": "..."}`.
 - Actor avatar/header → AS2 `icon` / `image` properties on the `Person`
   object, same shape.
-- Federated (remote) images are **not** proxied/cached through RustFS by
-  default in v1 — remote attachment URLs render as-is, pointing at the
-  remote server. Caching remote media locally (as Mastodon does, to avoid
-  hotlinking and for reliability) is deferred — flagged as an open
-  decision (§12).
+- Federated (remote) images are **not** proxied/cached through RustFS —
+  remote attachment URLs render as-is, pointing at the remote server.
+  **Decided (§12): deferred to v1.1** (caching remote media locally, as
+  Mastodon does, to avoid hotlinking and for reliability).
 
 ---
 
@@ -472,11 +473,10 @@ Services:
   (`cargo chef` for build caching). Runs `brillion migrate && brillion serve`
   on start (or migrations as a separate one-shot `entrypoint` service
   that `backend` `depends_on: condition: service_completed_successfully`).
-- `worker` — same image as `backend`, different entrypoint
-  (`brillion deliver-worker`), processes `delivery_queue`. (Could start as a
-  Tokio background task inside `backend` for v1 and split out only if
-  delivery volume warrants a separate process — flagged as an open
-  decision below.)
+- No separate `worker` service. **Decided (§12): in-process** — activity
+  delivery (processing `delivery_queue`, phase 3) runs as a Tokio
+  background task inside `backend` itself; revisit only if delivery
+  volume ever warrants splitting it into its own process/image.
 - `frontend` — React app; built as static assets and served either by
   `backend` (Axum `ServeDir` fallback) or its own lightweight `nginx`
   container. Simpler ops favors serving static assets straight from
@@ -518,70 +518,80 @@ Environment config via `.env` (not committed), read with `envy`/`dotenvy`
 
 ## 11. Frontend (React)
 
-- Vite + TypeScript + a GraphQL client (`urql` or Apollo Client — lean
-  toward `urql` for lighter weight, no strong requirement either way).
+- Vite + TypeScript. **Decided: Apollo Client** for GraphQL — over
+  `urql` (the spec's original lean toward lighter weight), picked
+  instead for its more established ecosystem.
+- Routing: **react-router** (v8, component API — `BrowserRouter`/
+  `Routes`/`Route`, not the data-router, since there's no
+  loader/action-worthy data layer yet). Implemented — see
+  `frontend/src/App.tsx` and `frontend/src/routes/`.
 - OAuth PKCE flow against the backend's own `/oauth/authorize` +
   `/oauth/token`.
 - Pages: public post view, actor profile (posts + followers/following
   counts), home timeline (local + followed federated actors), post
   editor (Markdown), settings, login/consent screen, admin (user list —
-  read-only; creation stays CLI-only in v1).
+  read-only; creation stays CLI-only in v1). Route shells for all of
+  these already exist (placeholders, not yet wired to data).
 - Post editor and avatar/header settings upload images by calling
   `requestImageUpload`, then `PUT`ing the file straight to the returned
   presigned RustFS URL from the browser (§5.2) — the GraphQL client never
   sends image bytes through `POST /graphql`.
-- Public post/profile pages should be server-renderable or at least
-  crawlable enough for link previews (OpenGraph tags) and for the
-  content-negotiated HTML actor/post pages in §3.2 to look reasonable
-  without requiring JS — worth a lightweight SSR or prerender pass, or
-  accept plain server-rendered HTML for the AP-facing routes and a full
-  SPA for the authenticated app. Flagged as an open decision below.
+- **Decided: client-only SPA** for public post/profile pages too (not
+  server-rendered HTML or React SSR) — `/users/:username` and
+  `/users/:username/:slug` are React routes. Accepted tradeoff: these
+  pages have no content for crawlers/link-preview bots/no-JS clients
+  until the JS bundle loads and fetches data; OpenGraph tags and
+  Fediverse-preview crawlability are not solved by this and would need
+  revisiting later if that matters. Practical implication for the
+  backend: `routes/actor.rs`'s non-AS2-`Accept` branch (currently a
+  placeholder HTML string) should ultimately serve the SPA's
+  `index.html` shell instead, letting client-side routing take over —
+  it does not need its own real HTML templating.
 
 ---
 
-## 12. Open decisions / questions
+## 12. Decisions (formerly open)
 
-1. **Delivery worker placement** — in-process Tokio task in `backend` vs.
-   separate `worker` container. Recommend starting in-process (simpler
-   Compose file, fine at blog-scale traffic) and splitting out only if
-   needed.
-2. **Public page rendering** — plain server-rendered HTML for
-   post/actor pages (simple, crawlable, no SSR toolchain) vs. React SSR
-   (nicer DX, more build complexity). Recommend plain server-rendered
-   HTML (e.g. Axum + a template engine like `askama`) for public/AP-facing
-   pages, SPA for the authenticated admin/editor experience.
-3. **`reader` role** — needed only if local accounts should be able to
-   follow/like/reply without owning a blog (vs. only remote Fediverse
-   users doing that). Recommend deferring to v1.1 unless you already know
-   you want it.
-4. **Markdown → HTML sanitization** — which sanitizer/allowlist for
+All items below were open questions with a recommendation; each has now
+been decided with the user directly. Kept as a single list (rather than
+folded silently into the sections above) so the *alternatives* and
+*why* stay visible — every decision here is also cross-referenced from
+the section it affects.
+
+1. **Delivery worker placement** — **Decided: in-process** Tokio task in
+   `backend`, not a separate `worker` container (simpler Compose file,
+   fine at blog-scale traffic; can split out later if needed). Affects
+   §9/§10.
+2. **Public page rendering** — **Decided: client-only SPA** for
+   post/actor pages — *not* the originally-recommended plain
+   server-rendered HTML, and not React SSR either. Accepted tradeoff:
+   no content for crawlers/link-preview bots/no-JS clients until the JS
+   bundle loads (OpenGraph/Fediverse-preview crawlability is unsolved
+   for now). See §11 and §4.1 for what this changes; §3.2's actor-doc
+   HTML branch now serves the SPA shell rather than server-rendering.
+3. **`reader` role** — **Decided: deferred to v1.1.** Local accounts
+   are all authors/admins for now; only remote Fediverse users
+   follow/like/reply without owning a blog.
+4. **Markdown → HTML sanitization** — **Decided: `ammonia`**, for
    federated `content` HTML (remote posts/replies arrive as HTML, not
-   Markdown, and must be sanitized before storage/render). Recommend
-   `ammonia`.
-5. **Tags/categories** — add a `tags`/`post_tags` schema and `/tags/:tag`
-   pages + per-tag feeds now, or defer to v1.1. Recommend deferring —
-   easy to add later without touching the core post model.
-6. **Full content vs. summary in feeds** — ship the full post HTML in
-   `<content:encoded>`/`<content type="html">` (§4.2, recommended — most
-   feed readers and "read in reader" workflows expect this) vs.
-   summary-only with a link back to the site (drives more site traffic,
-   worse reader experience). Recommend full content.
-7. **RustFS bucket visibility** — public-read bucket (simpler, images
-   just work via plain URLs) vs. private bucket with presigned GET URLs
-   generated per-request (more control, e.g. for unpublished-post
-   previews, but presigned URLs expire and complicate caching/CDN use).
-   Recommend public-read for v1 — blog images are meant to be public
-   anyway, and it keeps §5.3 simple.
-8. **Remote media caching** — proxy/cache remote actors' avatars and
-   attachment images through RustFS (as Mastodon does, avoiding
-   hotlinking and surviving the remote going down) vs. rendering remote
-   `url`s as-is (§5.4, simpler, zero extra storage/bandwidth cost).
-   Recommend deferring to v1.1.
-9. **Image resizing/thumbnails** — generate resized variants on upload
-   (better performance, more complex upload pipeline) vs. serving the
-   original at full size everywhere (simpler, matches the "no media-heavy
-   features" non-goal in §1). Recommend serving originals in v1; revisit
-   if image sizes become a real problem.
+   Markdown, and must be sanitized before storage/render).
+5. **Tags/categories** — **Decided: deferred to v1.1** — easy to add
+   later without touching the core post model. See §4.1.
+6. **Full content vs. summary in feeds** — **Decided: full content** in
+   `<content:encoded>`/`<content type="html">` (§4.2) — matches most
+   feed readers and "read in reader" workflows.
+7. **RustFS bucket visibility** — **Decided: public-read** bucket, not
+   presigned GET URLs — blog images are meant to be public anyway, and
+   it keeps §5.3 simple.
+8. **Remote media caching** — **Decided: deferred to v1.1.** Remote
+   actors' avatars/attachment images render via their own `url`s as-is
+   (§5.4); no proxying/caching through RustFS yet.
+9. **Image resizing/thumbnails** — **Decided: serve originals**, no
+   resized variants — matches the "no media-heavy features" non-goal
+   in §1; revisit if image sizes become a real problem.
+10. **GraphQL client library** — **Decided: Apollo Client**, not `urql`
+    (the original lean) — picked for its more established ecosystem.
+    See §11.
 
 ---
 

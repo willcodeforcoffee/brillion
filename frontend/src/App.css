@@ -1,6 +1,15 @@
+header nav {
+  display: flex;
+  gap: 1rem;
+  max-width: 40rem;
+  margin: 1.5rem auto 0;
+  padding: 0 1.5rem;
+  font-family: system-ui, sans-serif;
+}
+
 main {
   max-width: 40rem;
-  margin: 4rem auto;
+  margin: 1.5rem auto 4rem;
   padding: 0 1.5rem;
   font-family: system-ui, sans-serif;
 }

@@ -10,16 +10,19 @@ self-hosted OAuth 2.0 provider and RustFS (S3-compatible) media storage.
 
 **`SPEC.md` is the source of truth for design decisions** — domain model,
 every route/endpoint, the GraphQL schema shape, the OAuth flow, the
-Postgres schema, and open decisions with recommendations. Section numbers
-in code comments (e.g. `SPEC.md §3.4`) refer to it; when in doubt about
-*why* something is structured a certain way, read the referenced section
-before changing it. Current section map:
+Postgres schema, and §12's decision log (was "open decisions"; all 10
+items are now resolved — read it for the *why*, since several didn't
+go with the original recommendation, e.g. public pages ended up a
+client-only SPA, not server-rendered). Section numbers in code comments
+(e.g. `SPEC.md §3.4`) refer to it; when in doubt about *why* something
+is structured a certain way, read the referenced section before
+changing it. Current section map:
 
 1. Overview · 2. Domain model · 3. ActivityPub/ActivityStreams ·
 4. Blogging features (public pages, RSS/Atom) · 5. Media storage
 (RustFS) · 6. GraphQL API · 7. OAuth 2.0 provider · 8. CLI ·
 9. Data model (Postgres) · 10. Deployment (Docker Compose) ·
-11. Frontend (React) · 12. Open decisions · 13. Suggested phasing
+11. Frontend (React) · 12. Decisions (formerly open) · 13. Suggested phasing
 
 The project is being built in the phases listed in §13, but not strictly
 in order — phase 2 (federation inbound) was implemented before the rest
@@ -62,6 +65,16 @@ Person doc, sign+deliver an activity to a remote inbox), `router.rs`
 route/route-group: `webfinger`, `nodeinfo`, `actor`, `inbox`,
 `collections`), `db/` (Postgres access, one module per table: `users`,
 `actors`, `follows`, `domain_blocks`, `activities_log`).
+
+Inside `frontend/src`: `App.tsx` wires up `react-router` (component API
+— `BrowserRouter`/`Routes`/`Route`, not the data-router) over
+`routes/Layout.tsx` (nav + `Outlet`) and one placeholder page per
+`routes/*Page.tsx` (`Home`, `ActorProfile`, `Post`, `PostEditor`,
+`Settings`, `Login`, `OAuthCallback`, `AdminUsers`, `NotFound`) — real
+data-fetching isn't wired up yet (no GraphQL client installed), these
+are routing scaffolding only. GraphQL client is Apollo Client (§11/§12,
+decided over the lighter-weight `urql`) — not yet added as a
+dependency.
 
 ## Commands
 
@@ -146,6 +159,13 @@ its current state before assuming the full stack is wired up.
   app. All three read from the same `posts`/`actors` tables — don't let
   federation concepts leak into the feed/homepage rendering path or vice
   versa.
+- **Public pages are a client-only SPA, decided over server-rendered
+  HTML** (§11/§12) — `backend/src/routes/actor.rs`'s non-AS2-`Accept`
+  branch is currently a placeholder HTML string; per the decision it
+  should eventually serve the built frontend's `index.html` instead
+  (letting `react-router` take over client-side), not grow real Axum
+  HTML templating. Known accepted gap: no OpenGraph/crawler content
+  until that JS bundle loads.
 - **Local actors always get an RSA keypair and inbox/outbox/follower
   URLs at creation time** (`activitypub::signature::generate_keypair`,
   `activitypub::urls::ActorUrls`), even though federation isn't wired up
