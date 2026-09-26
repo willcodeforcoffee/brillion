@@ -8,6 +8,7 @@
 pub mod activity;
 pub mod object;
 pub mod signature;
+pub mod urls;
 
 /// The ActivityStreams 2.0 JSON-LD context URL, used verbatim (no
 /// general-purpose JSON-LD expansion — see SPEC.md §3.6).

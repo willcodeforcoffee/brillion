@@ -40,10 +40,13 @@ services:
         condition: service_started
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-brillion}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-brillion}
-      DOMAIN: ${DOMAIN:-localhost}
+      # The actor `domain` for user@domain addressing (SPEC.md §3.1) and
+      # the base for actor/post URLs is derived from this at startup —
+      # see backend/src/config.rs `Config::domain`.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost}
       PORT: 3000
       S3_ENDPOINT_INTERNAL: http://rustfs:9000
-      S3_ENDPOINT_PUBLIC: https://${DOMAIN:-localhost}/media
+      S3_ENDPOINT_PUBLIC: ${PUBLIC_BASE_URL:-http://localhost}/media
       S3_BUCKET: ${S3_BUCKET:-brillion-media}
       S3_ACCESS_KEY: ${RUSTFS_ROOT_USER}
       S3_SECRET_KEY: ${RUSTFS_ROOT_PASSWORD}

@@ -21,6 +21,11 @@ anyhow.workspace = true
 
 axum = "0.7"
 clap = { version = "4", features = ["derive"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+argon2 = "0.5"
+rpassword = "7"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
