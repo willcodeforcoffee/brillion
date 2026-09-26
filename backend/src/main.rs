@@ -1,14 +1,10 @@
-mod cli;
-mod config;
-mod crypto;
-mod db;
-mod router;
-
 use activitypub::urls::ActorUrls;
+use brillion::cli::{Cli, Command, DomainBlockCommand, UserCommand};
+use brillion::config::Config;
+use brillion::db::users::Role;
+use brillion::state::AppState;
+use brillion::{crypto, db, router};
 use clap::Parser;
-use cli::{Cli, Command, DomainBlockCommand, UserCommand};
-use config::Config;
-use db::users::Role;
 use sqlx::PgPool;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -27,7 +23,8 @@ async fn main() -> anyhow::Result<()> {
             let config = Config::from_env()?;
             let pool = db::connect(&config.database_url).await?;
             db::run_migrations(&pool).await?;
-            serve(&config).await
+            let port = config.port;
+            serve(port, AppState::new(pool, config)).await
         }
         Command::Migrate => {
             let config = Config::from_env()?;
@@ -41,16 +38,20 @@ async fn main() -> anyhow::Result<()> {
             let pool = db::connect(&config.database_url).await?;
             user_command(&pool, &config, command).await
         }
-        Command::DomainBlock { command } => domain_block_command(command),
+        Command::DomainBlock { command } => {
+            let config = Config::from_env()?;
+            let pool = db::connect(&config.database_url).await?;
+            domain_block_command(&pool, command).await
+        }
     }
 }
 
-async fn serve(config: &Config) -> anyhow::Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+async fn serve(port: u16, state: AppState) -> anyhow::Result<()> {
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "brillion listening");
-    axum::serve(listener, router::app()).await?;
+    axum::serve(listener, router::app(state)).await?;
     Ok(())
 }
 
@@ -145,14 +146,16 @@ fn read_new_password(from_stdin: bool) -> anyhow::Result<String> {
     }
 }
 
-fn domain_block_command(command: DomainBlockCommand) -> anyhow::Result<()> {
+async fn domain_block_command(pool: &PgPool, command: DomainBlockCommand) -> anyhow::Result<()> {
     match command {
-        DomainBlockCommand::Add { domain } => println!(
-            "brillion domain-block add: not yet implemented ({domain}) — federation lands in phase 2, SPEC.md §3"
-        ),
-        DomainBlockCommand::Remove { domain } => println!(
-            "brillion domain-block remove: not yet implemented ({domain}) — federation lands in phase 2, SPEC.md §3"
-        ),
+        DomainBlockCommand::Add { domain } => {
+            db::domain_blocks::add(pool, &domain, None).await?;
+            println!("Blocked domain: {domain}");
+        }
+        DomainBlockCommand::Remove { domain } => {
+            db::domain_blocks::remove(pool, &domain).await?;
+            println!("Unblocked domain: {domain}");
+        }
     }
     Ok(())
 }

@@ -1,4 +1,7 @@
+pub mod activities_log;
 pub mod actors;
+pub mod domain_blocks;
+pub mod follows;
 pub mod users;
 
 use sqlx::postgres::{PgPool, PgPoolOptions};

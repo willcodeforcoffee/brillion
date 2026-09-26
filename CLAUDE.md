@@ -21,17 +21,22 @@ before changing it. Current section map:
 9. Data model (Postgres) · 10. Deployment (Docker Compose) ·
 11. Frontend (React) · 12. Open decisions · 13. Suggested phasing
 
-The project is being built in the phases listed in §13. **Currently in
-phase 1** (local-only blog): users/actors are real and Postgres-backed
-via the CLI; posts, the GraphQL API, OAuth, image upload, and the public
-pages/feeds are not yet implemented. Federation (phases 2-4) hasn't
-started — the `activitypub` crate's `activity`/`object`/`signature`
-modules are mostly still TODO stubs beyond keypair generation.
+The project is being built in the phases listed in §13, but not strictly
+in order — phase 2 (federation inbound) was implemented before the rest
+of phase 1, since it turned out to depend only on actors, not posts.
+**Current state:** phase 1's users/actors (Postgres-backed, via the
+CLI) and phase 2's federation-inbound (WebFinger, actor documents,
+inbox receiving `Follow`/`Accept`/`Undo` with signature verification,
+followers/following) are both done. Still missing from phase 1: posts,
+the GraphQL API, OAuth, image upload, public pages/feeds. Phases 3-4
+(outbound federation beyond the auto-`Accept`, replies/likes/announces)
+haven't started.
 
 ## Layout
 
 ```
-backend/       Rust (Axum) server + CLI binary, package name `brillion`
+backend/       Rust (Axum) server + CLI, package `brillion` (lib.rs + thin main.rs)
+backend/tests/ Integration tests — DB-backed ones are #[ignore]d by default
 activitypub/   AS2/ActivityPub types + HTTP Signatures (no HTTP framework dep)
 frontend/      React + TypeScript (Vite) client
 deploy/        Reverse proxy config (Caddyfile)
@@ -43,11 +48,20 @@ no Axum/HTTP dependency by design — AS2 types, HTTP Signatures, and actor
 URL conventions live there so they aren't coupled to the web framework,
 in prep for federation logic that must be testable in isolation.
 
+`backend` is a library (`lib.rs`) plus a thin `main.rs` — done
+specifically so `backend/tests/*.rs` integration tests can build the
+real `router::app(state)` in-process and drive it with a real HTTP
+client, rather than shelling out to a built binary.
+
 Inside `backend/src`: `main.rs` (CLI dispatch + `serve`), `cli.rs` (clap
 argument definitions), `config.rs` (env-based `Config`), `crypto.rs`
-(Argon2id password hashing), `router.rs` (Axum router — currently just
-`/health`), `db/` (Postgres access: `mod.rs` has pool connect + migration
-runner, `users.rs`/`actors.rs` are per-table query modules).
+(Argon2id password hashing), `state.rs` (`AppState` = pool + config +
+reqwest client), `federation.rs` (outbound HTTP: fetch a remote actor's
+Person doc, sign+deliver an activity to a remote inbox), `router.rs`
+(mounts everything onto `AppState`), `routes/` (one file per
+route/route-group: `webfinger`, `nodeinfo`, `actor`, `inbox`,
+`collections`), `db/` (Postgres access, one module per table: `users`,
+`actors`, `follows`, `domain_blocks`, `activities_log`).
 
 ## Commands
 
@@ -81,6 +95,18 @@ cargo run -p brillion -- serve               # GET /health on :3000; also runs p
 (`sqlx::query_as::<_, T>(...)`), not the `sqlx::query!` compile-time
 macros — deliberately, so `cargo build` and the Docker build never need a
 live database connection. Keep new queries in this style.
+
+DB-backed integration tests (currently `backend/tests/inbox_federation.rs`)
+are marked `#[ignore]` so plain `cargo test` never needs a database. Run
+them explicitly against a **disposable** database:
+
+```sh
+DATABASE_URL=postgres://user:pass@host/db \
+  cargo test -p brillion --test inbox_federation -- --ignored
+```
+
+Note `sqlx-cli`-style compile-time query macros aren't in play here, so
+there's no `.sqlx` offline cache to regenerate.
 
 ### Frontend
 
@@ -147,3 +173,44 @@ its current state before assuming the full stack is wired up.
   explicit `migrate` subcommand (both call the same
   `db::run_migrations`) — this was a deliberate choice from §10 (option
   1: auto-migrate on boot) over a separate one-shot migration service.
+- **Axum 0.7 path params use `:name`, not `{name}`** — the latter is
+  0.8+ syntax and silently registers as a *literal* path segment instead
+  of erroring, so a wrong-syntax route just 404s on every real request.
+  Bit us once already; check this first if a route "isn't found."
+- **HTTP Signatures use `draft-cavage` (RSA-SHA256 + PKCS#1v1.5)**, not
+  RFC 9421 — `activitypub::signature` — because that's what's actually
+  deployed across the Fediverse. Signing/verifying goes through
+  `rsa::Pkcs1v15Sign` directly (not the `pkcs1v15::SigningKey`/`Signer`
+  trait wrappers) because those require `sha2::Sha256: AssociatedOid`,
+  which needs `sha2`'s `oid` feature explicitly enabled — see the
+  `features = ["oid"]` on the `sha2` dep in `activitypub/Cargo.toml`.
+- **Actors have an explicit `ap_id` column** (their AS2 `id` URL) rather
+  than reconstructing it from `domain`/`preferred_username` — required
+  for remote actors, whose `id` isn't guaranteed to follow our own
+  `{base}/users/{name}` convention. `resolve_actor` in
+  `routes/inbox.rs` looks a sender up by `ap_id` first, and only fetches
+  + caches (`federation::fetch_remote_actor` +
+  `db::actors::upsert_remote`) on a cache miss — using the activity's
+  own `actor` field directly, not WebFinger (WebFinger is only for
+  resolving a human-typed `user@domain`, not for key lookup).
+- **Inbound `Follow` gets a synchronous, best-effort `Accept` delivery**
+  (`routes/inbox.rs` `handle_follow`) — no retry queue yet (that's
+  phase 3's `delivery_queue`, §3.4/§9). A delivery failure is logged but
+  doesn't fail the inbox response or roll back the recorded follow.
+- **Dedup is by the activity's own AS2 `id`** (`activities_log`,
+  unique on `ap_id`) — `record_inbound` returns `false` for an
+  already-seen id and the handler short-circuits to `202` without
+  reprocessing. Exercised directly in the integration test (replaying
+  the original `Follow` after its `Undo` must NOT recreate the follow).
+- **Sandbox-specific gotcha (not a Brillion bug):** in this dev
+  environment, `docker exec <container> psql ...` has been observed to
+  return **stale or entirely different data** than a real TCP connection
+  to the same container's published port — reproduced multiple times
+  across different containers. Don't trust `docker exec` for verifying
+  database state; connect over TCP instead (`cargo run -- user list`,
+  or a throwaway Rust binary under `backend/examples/` using
+  `sqlx::PgPoolOptions`, deleted after use). Also: distinct throwaway
+  containers on distinct host ports have, at least once, resolved to
+  the *same* backing Postgres over TCP — when isolation actually
+  matters, prefer unique row-level identifiers (random suffixes) over
+  a separate container/port/dbname, and clean up explicitly afterward.
