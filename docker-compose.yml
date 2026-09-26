@@ -6,6 +6,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-brillion}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-brillion}
+    ports:
+      # Exposed to the host so `cargo run` (outside Compose) can reach the
+      # same database via DATABASE_URL in .env — not needed by `backend`
+      # itself, which talks to `postgres:5432` on the internal network.
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -28,30 +33,31 @@ services:
     volumes:
       - rustfs_data:/data
 
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      rustfs:
-        condition: service_started
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-brillion}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-brillion}
-      # The actor `domain` for user@domain addressing (SPEC.md §3.1) and
-      # the base for actor/post URLs is derived from this at startup —
-      # see backend/src/config.rs `Config::domain`.
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost}
-      PORT: 3000
-      S3_ENDPOINT_INTERNAL: http://rustfs:9000
-      S3_ENDPOINT_PUBLIC: ${PUBLIC_BASE_URL:-http://localhost}/media
-      S3_BUCKET: ${S3_BUCKET:-brillion-media}
-      S3_ACCESS_KEY: ${RUSTFS_ROOT_USER}
-      S3_SECRET_KEY: ${RUSTFS_ROOT_PASSWORD}
-      RUST_LOG: ${RUST_LOG:-info}
-    command: ["serve"]
+  # I'm only interested in running local services right now
+  # backend:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     rustfs:
+  #       condition: service_started
+  #   environment:
+  #     DATABASE_URL: postgres://${POSTGRES_USER:-brillion}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-brillion}
+  #     # The actor `domain` for user@domain addressing (SPEC.md §3.1) and
+  #     # the base for actor/post URLs is derived from this at startup —
+  #     # see backend/src/config.rs `Config::domain`.
+  #     PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost}
+  #     PORT: 3000
+  #     S3_ENDPOINT_INTERNAL: http://rustfs:9000
+  #     S3_ENDPOINT_PUBLIC: ${PUBLIC_BASE_URL:-http://localhost}/media
+  #     S3_BUCKET: ${S3_BUCKET:-brillion-media}
+  #     S3_ACCESS_KEY: ${RUSTFS_ROOT_USER}
+  #     S3_SECRET_KEY: ${RUSTFS_ROOT_PASSWORD}
+  #     RUST_LOG: ${RUST_LOG:-info}
+  #   command: ["serve"]
 
   proxy:
     image: caddy:2

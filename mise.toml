@@ -1,2 +1,6 @@
 [tools]
+node = "22"
 rust = "1.98.1"
+
+[env]
+_.file = ".env"

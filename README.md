@@ -19,15 +19,23 @@ docker-compose.yml
 Dockerfile     Multi-stage build: frontend assets + backend binary
 ```
 
+## Toolchain
+
+`mise.toml` pins Rust and Node (matching the versions this project is
+built/tested against) and auto-loads `.env`. Run `mise install` once;
+with `mise activate` in your shell rc, `cd`-ing into this directory
+loads both automatically — otherwise run `eval "$(mise env)"` yourself.
+
 ## Backend
 
-Requires a Rust toolchain (stable) and a Postgres database. Verified
-working: `cargo build`, `test`, `clippy --all-targets -- -D warnings`,
-and `fmt --check` all pass clean.
+Requires a Rust toolchain (stable), a Postgres database, and
+`DATABASE_URL`/`PUBLIC_BASE_URL` in the environment — via mise loading
+`.env` (see Toolchain above), or exported by hand if you're not using
+mise. Verified working: `cargo build`, `test`,
+`clippy --all-targets -- -D warnings`, and `fmt --check` all pass clean.
 
 ```sh
-export DATABASE_URL=postgres://brillion:devpass@localhost:5432/brillion
-export PUBLIC_BASE_URL=http://localhost:3000   # used to build actor/post URLs (SPEC.md §3.1)
+docker compose up -d postgres   # or point DATABASE_URL at your own instance
 
 cargo run -p brillion -- migrate
 cargo run -p brillion -- user create --email you@example.com --username you --role admin
