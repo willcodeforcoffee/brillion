@@ -36,10 +36,9 @@ impl std::fmt::Display for Role {
 pub struct User {
     pub id: Uuid,
     pub email: String,
-    #[allow(dead_code)] // read back for completeness; not used until login (phase 1 OAuth slice)
     pub password_hash: String,
     pub role: Role,
-    #[allow(dead_code)] // ditto
+    #[allow(dead_code)]
     pub created_at: DateTime<Utc>,
 }
 
@@ -100,6 +99,32 @@ where
          where a.preferred_username = $1 and a.is_local = true",
     )
     .bind(username)
+    .fetch_optional(executor)
+    .await?;
+    Ok(user)
+}
+
+pub async fn find_by_id<'e, E>(executor: E, id: Uuid) -> anyhow::Result<Option<User>>
+where
+    E: PgExecutor<'e>,
+{
+    let user = sqlx::query_as::<_, User>(
+        "select id, email, password_hash, role, created_at from users where id = $1",
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(user)
+}
+
+pub async fn find_by_email<'e, E>(executor: E, email: &str) -> anyhow::Result<Option<User>>
+where
+    E: PgExecutor<'e>,
+{
+    let user = sqlx::query_as::<_, User>(
+        "select id, email, password_hash, role, created_at from users where email = $1",
+    )
+    .bind(email)
     .fetch_optional(executor)
     .await?;
     Ok(user)

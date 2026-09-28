@@ -24,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
             let pool = db::connect(&config.database_url).await?;
             db::run_migrations(&pool).await?;
             let port = config.port;
-            serve(port, AppState::new(pool, config)).await
+            serve(port, AppState::new(pool, config)?).await
         }
         Command::Migrate => {
             let config = Config::from_env()?;
@@ -47,11 +47,22 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn serve(port: u16, state: AppState) -> anyhow::Result<()> {
+    if let Err(error) = state.media.ensure_bucket(&state.http).await {
+        tracing::warn!(%error, "could not ensure RustFS bucket exists at startup");
+    }
+
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "brillion listening");
-    axum::serve(listener, router::app(state)).await?;
+    // `with_connect_info` so the inbox rate limiter's `SmartIpKeyExtractor`
+    // (router.rs) has a real peer address to fall back to when there's no
+    // reverse proxy in front adding `X-Forwarded-For` (SPEC.md §3.6).
+    axum::serve(
+        listener,
+        router::app(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 

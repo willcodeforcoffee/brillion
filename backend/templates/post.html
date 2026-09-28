@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ title }} — Brillion</title>
+  <meta property="og:title" content="{{ title }}">
+  <meta property="og:type" content="article">
+  {% if let Some(summary) = summary %}
+  <meta property="og:description" content="{{ summary }}">
+  {% endif %}
+  <link rel="alternate" type="application/rss+xml" title="@{{ author_username }}" href="/users/{{ author_username }}/feed.rss">
+  <link rel="alternate" type="application/atom+xml" title="@{{ author_username }}" href="/users/{{ author_username }}/feed.atom">
+</head>
+<body>
+  <main>
+    <h1>{{ title }}</h1>
+    <p><a href="/users/{{ author_username }}">@{{ author_username }}</a> · {{ published_at }}</p>
+    {{ body_html|safe }}
+  </main>
+</body>
+</html>

@@ -109,6 +109,7 @@ async fn follow_then_undo_round_trip() {
         database_url: database_url.clone(),
         public_base_url: public_base_url.clone(),
         port: our_addr.port(),
+        ..Config::test_default()
     };
 
     let username = format!("alice-{}", Uuid::new_v4().simple());
@@ -136,10 +137,15 @@ async fn follow_then_undo_round_trip() {
     .await
     .unwrap();
 
-    let state = AppState::new(pool.clone(), config);
+    let state = AppState::new(pool.clone(), config).unwrap();
     let app = brillion::router::app(state);
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     // --- mock remote actor ("bob"), also in-process -------------------
@@ -161,8 +167,8 @@ async fn follow_then_undo_round_trip() {
         public_key_pem: bob_keypair.public_key_pem.clone(),
     };
     let mock_app = Router::new()
-        .route("/users/:username", get(mock_actor))
-        .route("/users/:username/inbox", post(mock_inbox))
+        .route("/users/{username}", get(mock_actor))
+        .route("/users/{username}/inbox", post(mock_inbox))
         .with_state(mock_state);
     tokio::spawn(async move {
         axum::serve(mock_listener, mock_app).await.unwrap();

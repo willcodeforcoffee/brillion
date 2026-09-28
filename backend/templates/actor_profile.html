@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>@{{ username }} — Brillion</title>
+  <link rel="alternate" type="application/rss+xml" title="@{{ username }}" href="/users/{{ username }}/feed.rss">
+  <link rel="alternate" type="application/atom+xml" title="@{{ username }}" href="/users/{{ username }}/feed.atom">
+</head>
+<body>
+  <main>
+    <h1>@{{ username }}</h1>
+    {% if !bio.is_empty() %}
+    <p>{{ bio }}</p>
+    {% endif %}
+    {% for post in posts %}
+    <article>
+      <h2><a href="/users/{{ username }}/{{ post.slug }}">{{ post.title }}</a></h2>
+      <p>{{ post.published_at }}</p>
+      {% if let Some(summary) = post.summary %}
+      <p>{{ summary }}</p>
+      {% endif %}
+    </article>
+    {% endfor %}
+    {% if posts.is_empty() %}
+    <p>No posts yet.</p>
+    {% endif %}
+  </main>
+</body>
+</html>

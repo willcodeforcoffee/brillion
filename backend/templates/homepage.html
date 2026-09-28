@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Brillion</title>
+  <link rel="alternate" type="application/rss+xml" title="Brillion" href="/feed.rss">
+  <link rel="alternate" type="application/atom+xml" title="Brillion" href="/feed.atom">
+</head>
+<body>
+  <main>
+    <h1>Brillion</h1>
+    {% for post in posts %}
+    <article>
+      <h2><a href="/users/{{ post.author_username }}/{{ post.slug }}">{{ post.title }}</a></h2>
+      <p><a href="/users/{{ post.author_username }}">@{{ post.author_username }}</a> · {{ post.published_at }}</p>
+      {% if let Some(summary) = post.summary %}
+      <p>{{ summary }}</p>
+      {% endif %}
+    </article>
+    {% endfor %}
+    {% if posts.is_empty() %}
+    <p>No posts yet.</p>
+    {% endif %}
+  </main>
+</body>
+</html>

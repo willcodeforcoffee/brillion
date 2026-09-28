@@ -1,7 +1,12 @@
 pub mod actor;
 pub mod collections;
+pub mod feeds;
+pub mod graphql;
 pub mod inbox;
 pub mod nodeinfo;
+pub mod oauth;
+pub mod pages;
+pub mod post;
 pub mod webfinger;
 
 use axum::response::{IntoResponse, Response};

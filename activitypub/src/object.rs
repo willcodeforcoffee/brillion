@@ -1,7 +1,9 @@
-//! AS2 object types: `Person` (actor documents, §3.2) and the
-//! `OrderedCollection` shape used for followers/following/outbox (§3.3).
+//! AS2 object types: `Person` (actor documents, §3.2), `Article`
+//! (posts, §3.5/§4.1), and the `OrderedCollection` shape used for
+//! followers/following/outbox (§3.3).
 //!
-//! TODO(phase 3): `Article`/`Note`/`Tombstone` land with posts/replies.
+//! TODO(phase 3/4): `Note` (replies) and `Tombstone` (deletes) land
+//! with outbound federation.
 
 use crate::AS2_CONTEXT;
 use serde::{Deserialize, Serialize};
@@ -91,6 +93,52 @@ impl Image {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Article {
+    #[serde(rename = "@context")]
+    pub context: String,
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub content: String,
+    #[serde(rename = "attributedTo")]
+    pub attributed_to: String,
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published: Option<String>,
+}
+
+impl Article {
+    /// `published` is an RFC 3339 timestamp string — kept as a plain
+    /// `String` here (rather than pulling in `chrono`) since this crate
+    /// otherwise has no need for a date/time type.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: &str,
+        title: &str,
+        summary: Option<&str>,
+        content_html: &str,
+        author_ap_id: &str,
+        url: &str,
+        published: Option<&str>,
+    ) -> Self {
+        Self {
+            context: AS2_CONTEXT.to_string(),
+            id: id.to_string(),
+            kind: "Article".to_string(),
+            name: title.to_string(),
+            summary: summary.map(str::to_string),
+            content: content_html.to_string(),
+            attributed_to: author_ap_id.to_string(),
+            url: url.to_string(),
+            published: published.map(str::to_string),
+        }
+    }
+}
+
 /// A non-paginated `OrderedCollection` — fine for followers/following at
 /// the scale a single-instance blog will see; outbox pagination lands
 /// with post volume in phase 3.
@@ -145,6 +193,26 @@ mod tests {
             "https://brillion.example.com/users/alice#main-key"
         );
         assert!(json.get("icon").is_none());
+    }
+
+    #[test]
+    fn article_document_has_expected_shape() {
+        let article = Article::new(
+            "https://brillion.example.com/users/alice/hello-world",
+            "Hello, World",
+            Some("a summary"),
+            "<p>body</p>",
+            "https://brillion.example.com/users/alice",
+            "https://brillion.example.com/users/alice/hello-world",
+            Some("2026-01-01T00:00:00Z"),
+        );
+        let json = serde_json::to_value(&article).unwrap();
+        assert_eq!(json["type"], "Article");
+        assert_eq!(
+            json["attributedTo"],
+            "https://brillion.example.com/users/alice"
+        );
+        assert_eq!(json["content"], "<p>body</p>");
     }
 
     #[test]

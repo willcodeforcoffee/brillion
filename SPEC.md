@@ -101,7 +101,7 @@ itself is served with a normal read/write web UI.
 
 - `GET /users/:username` — content-negotiated:
   - `Accept: application/activity+json` or `application/ld+json; profile="https://www.w3.org/ns/activitystreams"` → AS2 `Person` JSON-LD document (public key, inbox, outbox, followers, following URLs).
-  - Otherwise → the SPA shell (`index.html`); the React app's client-side router (§11) renders the profile page from there.
+  - Otherwise → server-rendered HTML profile page (Axum + `askama`, §11/§12).
 - Each local actor has an RSA keypair generated at creation time (private
   key stored server-side only, public key embedded in the actor document)
   for HTTP Signatures.
@@ -186,17 +186,15 @@ itself is served with a normal read/write web UI.
 - `GET /` — site homepage: paginated, newest-first list of **published
   posts from all local users** (not just one author) — title, excerpt/
   summary, author byline + avatar, published date, link to the full post.
-  **Decided (§11/§12): client-only SPA**, not server-rendered — this is
-  the React router's `/` route (`HomePage`), fetching via GraphQL;
+  **Decided (§11/§12): plain server-rendered HTML** (Axum + `askama`),
   independent of any single actor's outbox.
 - `GET /users/:username` — per-author blog page: the same list, scoped to
   one actor's posts (this is the same URL as the content-negotiated AS2
   `Person` document — see §3.2 — the HTML branch of that content
-  negotiation serves the SPA shell, which renders this page via
-  `ActorProfilePage`).
+  negotiation *is* this page).
 - `GET /users/:username/:slug` — full post permalink. Content-negotiated:
   `Accept: application/activity+json` → the AS2 `Article` object (§3.5);
-  otherwise → the SPA shell, rendering via `PostPage`.
+  otherwise → rendered HTML with the post body and author byline.
 - `GET /tags/:tag` (optional, v1.1) — posts filtered by tag; needs a
   `tags`/`post_tags` schema addition not otherwise required in v1 —
   deferred to v1.1 (§12).
@@ -269,10 +267,16 @@ container, not on the application container's local disk — keeps
   and isn't a hard dependency baked into application code.
 - Two endpoint configs, one client: admin operations (bucket creation)
   use RustFS's Compose-internal address; **presigning** uses the public
-  base URL (the blog's own domain + `/media`) so the signature matches
-  what the browser will actually request through the proxy — otherwise
-  presigned URLs signed against the internal hostname won't validate when
-  hit from outside.
+  base URL (the blog's own domain, §5.3 adds `/media`) so the signature
+  matches what the browser will actually request through the proxy —
+  otherwise presigned URLs signed against the internal hostname won't
+  validate when hit from outside. Concretely: `backend/src/media.rs`'s
+  `MediaStore` holds two `rusty_s3::Bucket`s (internal + public); a
+  presigned URL is signed against the *bucket-rooted* path (matching
+  what RustFS itself will see), then `/media` is added onto the already-
+  signed URL's path afterward, since the proxy strips that prefix back
+  off before forwarding (§5.3) — the signature only covers the path
+  RustFS actually receives post-strip, not the browser-facing one.
 
 ### 5.2 Upload flow
 
@@ -295,11 +299,17 @@ container, not on the application container's local disk — keeps
 - RustFS serves the objects directly. **Decided (§12): public-read
   bucket** (not presigned GET URLs) — the `backend`/`worker` containers
   are not in the read path for images.
-- The reverse proxy (`caddy`/`nginx`, §10) fronts RustFS on a path like
+- The reverse proxy (`caddy`, §10) fronts RustFS on a path like
   `/media/*` so images are served from the blog's own domain — needed so
   AS2 `Image` `url`s and OpenGraph image tags resolve to a first-party
   URL for federated software and link-preview crawlers, rather than a
-  separate storage host.
+  separate storage host. This has to be a *prefix-stripping* route
+  (`handle_path`, not `handle`, in `deploy/Caddyfile`) since RustFS's own
+  paths are bucket-rooted with no `/media` segment — and since RustFS
+  sends no `Access-Control-Allow-*` headers on its own, the same route
+  adds them (permissive `*`, since this is public media with no
+  credentials involved) so browser-driven presigned uploads don't fail
+  CORS.
 - Stored URLs in Postgres (`media_attachments.url`, `actors.avatar_url`,
   `actors.header_url`) are always these public-facing `/media/...` URLs,
   never the raw RustFS/S3 endpoint.
@@ -524,29 +534,26 @@ Environment config via `.env` (not committed), read with `envy`/`dotenvy`
 - Routing: **react-router** (v8, component API — `BrowserRouter`/
   `Routes`/`Route`, not the data-router, since there's no
   loader/action-worthy data layer yet). Implemented — see
-  `frontend/src/App.tsx` and `frontend/src/routes/`.
+  `frontend/src/App.tsx` and `frontend/src/routes/`. This SPA covers
+  only the **authenticated app** (§12 #2) — the public-facing pages
+  below are server-rendered, not part of this router.
 - OAuth PKCE flow against the backend's own `/oauth/authorize` +
   `/oauth/token`.
-- Pages: public post view, actor profile (posts + followers/following
-  counts), home timeline (local + followed federated actors), post
-  editor (Markdown), settings, login/consent screen, admin (user list —
-  read-only; creation stays CLI-only in v1). Route shells for all of
-  these already exist (placeholders, not yet wired to data).
+- **Decided (§12): plain server-rendered HTML** (Axum + `askama`) for
+  the public-facing pages — homepage, per-author page, post permalink
+  (§4.1) — not React SSR or a client-only SPA. These are simple,
+  crawlable, and work without JS; the SPA below is for the authenticated
+  experience only.
+- SPA pages: home timeline (local + followed federated actors — the
+  authenticated, personalized feed; distinct from the public homepage
+  in §4.1, which is server-rendered and unauthenticated), post editor
+  (Markdown), settings, login/consent screen, admin (user list —
+  read-only; creation stays CLI-only in v1). Route shells for these
+  already exist (placeholders, not yet wired to data).
 - Post editor and avatar/header settings upload images by calling
   `requestImageUpload`, then `PUT`ing the file straight to the returned
   presigned RustFS URL from the browser (§5.2) — the GraphQL client never
   sends image bytes through `POST /graphql`.
-- **Decided: client-only SPA** for public post/profile pages too (not
-  server-rendered HTML or React SSR) — `/users/:username` and
-  `/users/:username/:slug` are React routes. Accepted tradeoff: these
-  pages have no content for crawlers/link-preview bots/no-JS clients
-  until the JS bundle loads and fetches data; OpenGraph tags and
-  Fediverse-preview crawlability are not solved by this and would need
-  revisiting later if that matters. Practical implication for the
-  backend: `routes/actor.rs`'s non-AS2-`Accept` branch (currently a
-  placeholder HTML string) should ultimately serve the SPA's
-  `index.html` shell instead, letting client-side routing take over —
-  it does not need its own real HTML templating.
 
 ---
 
@@ -562,13 +569,14 @@ the section it affects.
    `backend`, not a separate `worker` container (simpler Compose file,
    fine at blog-scale traffic; can split out later if needed). Affects
    §9/§10.
-2. **Public page rendering** — **Decided: client-only SPA** for
-   post/actor pages — *not* the originally-recommended plain
-   server-rendered HTML, and not React SSR either. Accepted tradeoff:
-   no content for crawlers/link-preview bots/no-JS clients until the JS
-   bundle loads (OpenGraph/Fediverse-preview crawlability is unsolved
-   for now). See §11 and §4.1 for what this changes; §3.2's actor-doc
-   HTML branch now serves the SPA shell rather than server-rendering.
+2. **Public page rendering** — **Decided: plain server-rendered HTML**
+   (Axum + a template engine like `askama`) for post/actor pages — not
+   React SSR, not a client-only SPA. The React SPA (§11) is for the
+   authenticated admin/editor experience only; public pages stay simple,
+   crawlable, and work without JS. (Briefly decided the other way —
+   client-only SPA — then reversed back to this before any backend
+   templating work started; the React routes added for the public pages
+   were removed again.)
 3. **`reader` role** — **Decided: deferred to v1.1.** Local accounts
    are all authors/admins for now; only remote Fediverse users
    follow/like/reply without owning a blog.

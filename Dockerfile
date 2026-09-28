@@ -7,11 +7,16 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- backend: plan + cache dependencies (cargo-chef) ------------------
-# NOTE: pin an exact cargo-chef/rust tag before production use — this
-# uses the floating "latest-rust-1" tag documented at
-# https://github.com/LukeMathWalker/cargo-chef for local/dev builds.
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+# Built on the same Debian release as the `runtime` stage below
+# (`bookworm`), deliberately *not* `lukemathwalker/cargo-chef`'s
+# floating `latest-rust-1` tag — that resolved to a newer glibc than
+# `debian:bookworm-slim` ships, so the compiled binary failed to start
+# in `runtime` at all (`GLIBC_2.38' not found`). Confirmed by actually
+# running the built image, not just building it. If the Rust version
+# ever needs bumping, keep both stages on a matching Debian release.
+FROM rust:1-bookworm AS chef
 WORKDIR /app
+RUN cargo install cargo-chef --locked
 
 FROM chef AS planner
 COPY Cargo.toml ./
@@ -40,8 +45,11 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /app/target/release/brillion /usr/local/bin/brillion
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
-# TODO(later phase): serve ./frontend/dist as the SPA fallback from the
-# Axum router — see SPEC.md §11 open decision on SSR vs. plain HTML.
+# Public pages (homepage, actor profile, post permalink) are server-
+# rendered by `backend` itself (askama templates, SPEC.md §11/§12 #2) —
+# this ./frontend/dist copy is for the authenticated SPA only (login,
+# settings, editor, admin). TODO: no static-file-serving fallback wired
+# up in the Axum router yet to actually serve it.
 
 ENV RUST_LOG=info
 EXPOSE 3000

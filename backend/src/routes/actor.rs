@@ -1,13 +1,23 @@
 //! `GET /users/:username` — content-negotiated actor document (AS2
-//! `Person`) or a placeholder HTML page. SPEC.md §3.2 / §4.1.
+//! `Person`) or a server-rendered profile page. SPEC.md §3.2 / §4.1.
 
+use crate::pages::PostSummary;
 use crate::routes::as2_json;
 use crate::state::AppState;
 use activitypub::object::Person;
 use activitypub::urls::ActorUrls;
+use askama::Template;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
+
+#[derive(Template)]
+#[template(path = "actor_profile.html")]
+struct ActorProfileTemplate {
+    username: String,
+    bio: String,
+    posts: Vec<PostSummary>,
+}
 
 pub async fn handler(
     State(state): State<AppState>,
@@ -41,11 +51,28 @@ pub async fn handler(
         );
         as2_json(person)
     } else {
-        // Public profile pages are the rest of phase 1 (SPEC.md §4.1),
-        // not built yet — a plain placeholder keeps the route resolvable.
-        Html(format!(
-            "<!doctype html><title>@{username}</title><p>@{username} — public profile page isn't built yet.</p>"
-        ))
-        .into_response()
+        let posts =
+            match crate::db::posts::list_published(&state.pool, Some(actor.id), None, 20).await {
+                Ok(posts) => posts,
+                Err(error) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+                }
+            };
+        let summaries = match crate::pages::post_summaries(&state.pool, posts).await {
+            Ok(summaries) => summaries,
+            Err(error) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+            }
+        };
+
+        let template = ActorProfileTemplate {
+            username: actor.preferred_username,
+            bio: actor.bio,
+            posts: summaries,
+        };
+        match template.render() {
+            Ok(html) => Html(html).into_response(),
+            Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+        }
     }
 }

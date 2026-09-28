@@ -19,7 +19,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
 
-axum = "0.7"
+axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate"] }
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -28,6 +28,20 @@ argon2 = "0.5"
 rpassword = "7"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "http2"] }
 http = "1.5.0"
+rand = "0.8"
+sha2 = "0.10"
+base64 = "0.23.1"
+rusty-s3 = "0.10.2"
+url = "2.5.8"
+async-graphql = { version = "7.2.1", features = ["chrono", "uuid"] }
+async-graphql-axum = "7.2.1"
+pulldown-cmark = "0.13.4"
+ammonia = "4.2.0"
+askama = "0.16.1"
+rss = "2.1.2"
+atom_syndication = "0.12.10"
+tower_governor = { version = "0.8.0", default-features = false, features = ["axum"] }
+tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

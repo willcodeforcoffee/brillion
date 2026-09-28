@@ -2,6 +2,9 @@ pub mod activities_log;
 pub mod actors;
 pub mod domain_blocks;
 pub mod follows;
+pub mod media_attachments;
+pub mod oauth;
+pub mod posts;
 pub mod users;
 
 use sqlx::postgres::{PgPool, PgPoolOptions};

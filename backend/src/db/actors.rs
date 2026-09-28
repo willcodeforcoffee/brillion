@@ -168,3 +168,62 @@ where
         .await?;
     Ok(count)
 }
+
+pub async fn find_by_id<'e, E>(executor: E, id: Uuid) -> anyhow::Result<Option<Actor>>
+where
+    E: PgExecutor<'e>,
+{
+    let actor = sqlx::query_as::<_, Actor>(
+        "select id, ap_id, user_id, preferred_username, domain, display_name, bio,
+             avatar_url, header_url, inbox_url, outbox_url, followers_url,
+             following_url, public_key_pem, private_key_pem, is_local, created_at
+         from actors where id = $1",
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(actor)
+}
+
+pub async fn find_local_by_user_id<'e, E>(
+    executor: E,
+    user_id: Uuid,
+) -> anyhow::Result<Option<Actor>>
+where
+    E: PgExecutor<'e>,
+{
+    let actor = sqlx::query_as::<_, Actor>(
+        "select id, ap_id, user_id, preferred_username, domain, display_name, bio,
+             avatar_url, header_url, inbox_url, outbox_url, followers_url,
+             following_url, public_key_pem, private_key_pem, is_local, created_at
+         from actors where user_id = $1 and is_local = true",
+    )
+    .bind(user_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(actor)
+}
+
+pub async fn update_avatar_url<'e, E>(executor: E, actor_id: Uuid, url: &str) -> anyhow::Result<()>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query("update actors set avatar_url = $1 where id = $2")
+        .bind(url)
+        .bind(actor_id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}
+
+pub async fn update_header_url<'e, E>(executor: E, actor_id: Uuid, url: &str) -> anyhow::Result<()>
+where
+    E: PgExecutor<'e>,
+{
+    sqlx::query("update actors set header_url = $1 where id = $2")
+        .bind(url)
+        .bind(actor_id)
+        .execute(executor)
+        .await?;
+    Ok(())
+}

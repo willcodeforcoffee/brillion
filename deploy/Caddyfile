@@ -2,11 +2,37 @@
 # your real domain (e.g. "brillion.example.com") so Caddy provisions and
 # renews a Let's Encrypt certificate automatically — see SPEC.md §10.
 :80 {
-	handle /media/* {
+	# `handle_path`, not `handle`: RustFS's own paths are bucket-rooted
+	# (`/<bucket>/<key>`, no `/media` prefix), so the prefix has to be
+	# stripped before proxying — `backend/src/media.rs` signs presigned
+	# URLs assuming exactly this stripping happens (see the comment on
+	# `MediaStore::presign_upload`). CORS headers are added here because
+	# RustFS itself sends none (verified against a real browser: uploads
+	# fail with a CORS error, not a signature error) — media is public
+	# per SPEC.md §5.3, so a permissive `*` origin is fine, and this
+	# also short-circuits the preflight `OPTIONS` request rather than
+	# relying on RustFS's own handling of it.
+	handle_path /media/* {
+		@preflight {
+			method OPTIONS
+		}
+		header {
+			Access-Control-Allow-Origin *
+			Access-Control-Allow-Methods "GET, PUT, HEAD, OPTIONS"
+			Access-Control-Allow-Headers "Content-Type"
+		}
+		respond @preflight 204
 		reverse_proxy rustfs:9000
 	}
 
+	# `host.docker.internal`, not `backend`: local dev runs the backend
+	# on the host (`cargo run -- serve`, faster iteration than rebuilding
+	# the Docker image every change) rather than as the `backend` service
+	# in docker-compose.yml, which is commented out to match. Docker
+	# Desktop resolves `host.docker.internal` to the host automatically.
+	# If `backend` is ever uncommented and run in Compose instead, flip
+	# this back to `backend:3000`.
 	handle {
-		reverse_proxy backend:3000
+		reverse_proxy host.docker.internal:3000
 	}
 }
