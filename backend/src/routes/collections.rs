@@ -1,8 +1,7 @@
 //! `GET /users/:username/{followers,following,outbox}` — SPEC.md §3.3.
 //!
 //! Non-paginated (fine at this scale — see the note on
-//! `activitypub::object::OrderedCollection`). `outbox` is an empty
-//! collection until posts land (phase 3).
+//! `activitypub::object::OrderedCollection`).
 
 use crate::db::actors::Actor;
 use crate::routes::as2_json;
@@ -59,5 +58,20 @@ pub async fn outbox(State(state): State<AppState>, Path(username): Path<String>)
         Ok(actor) => actor,
         Err(response) => return response.into_response(),
     };
-    as2_json(OrderedCollection::new(&actor.outbox_url, vec![]))
+    // Each item is a `Create` activity id, derived the same way
+    // `crate::delivery::enqueue_create` builds it — see the note on
+    // `db::posts::list_published_ap_ids`.
+    match crate::db::posts::list_published_ap_ids(&state.pool, actor.id).await {
+        Ok(ap_object_ids) => {
+            let items = ap_object_ids
+                .into_iter()
+                .map(|id| format!("{id}#create"))
+                .collect();
+            as2_json(OrderedCollection::new(&actor.outbox_url, items))
+        }
+        Err(error) => {
+            tracing::error!(%error, "outbox lookup failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
+    }
 }

@@ -2,7 +2,10 @@ use super::types::{
     ActorGql, ActorImageKind, CreatePostInput, ImageUploadTarget, PostGql, UpdatePostInput,
 };
 use super::{parse_id, to_post_gql, Viewer};
+use crate::config::Config;
 use crate::db;
+use crate::db::posts::Post;
+use crate::delivery;
 use crate::markdown;
 use crate::media::MediaStore;
 use async_graphql::{Context, Object, ID};
@@ -46,7 +49,8 @@ impl Mutation {
         let actor_id = ctx.data::<Viewer>()?.require_actor()?;
         let pool = ctx.data::<PgPool>()?;
         let post_id = parse_id(&id)?;
-        own_post_or_error(pool, post_id, actor_id).await?;
+        let existing = find_own_post(pool, post_id, actor_id).await?;
+        let was_published = existing.is_published();
 
         let body_html = markdown::render(&input.body_markdown);
         let post = db::posts::update(
@@ -61,16 +65,42 @@ impl Mutation {
         )
         .await?;
 
+        // An edit to an already-published post re-federates as an
+        // `Update` (SPEC.md §3.4) — a draft edit has nothing to tell
+        // anyone yet, since no `Create` was ever sent for it.
+        if was_published {
+            let author = find_actor(pool, actor_id).await?;
+            if let Err(error) = delivery::enqueue_update(pool, &author, &post).await {
+                tracing::error!(%error, post_id = %post.id, "failed to enqueue Update activity");
+            }
+        }
+
         Ok(to_post_gql(pool, post).await?)
     }
 
     async fn publish_post(&self, ctx: &Context<'_>, id: ID) -> async_graphql::Result<PostGql> {
         let actor_id = ctx.data::<Viewer>()?.require_actor()?;
         let pool = ctx.data::<PgPool>()?;
+        let config = ctx.data::<Config>()?;
         let post_id = parse_id(&id)?;
-        own_post_or_error(pool, post_id, actor_id).await?;
+        let existing = find_own_post(pool, post_id, actor_id).await?;
+        // Re-publishing an already-published post is a federation no-op
+        // — don't send a second `Create` for the same object.
+        let already_published = existing.is_published();
 
-        let post = db::posts::publish(pool, post_id).await?;
+        let author = find_actor(pool, actor_id).await?;
+        let permalink = format!(
+            "{}/users/{}/{}",
+            config.public_base_url, author.preferred_username, existing.slug
+        );
+        let post = db::posts::publish(pool, post_id, &permalink).await?;
+
+        if !already_published {
+            if let Err(error) = delivery::enqueue_create(pool, &author, &post).await {
+                tracing::error!(%error, post_id = %post.id, "failed to enqueue Create activity");
+            }
+        }
+
         Ok(to_post_gql(pool, post).await?)
     }
 
@@ -78,7 +108,16 @@ impl Mutation {
         let actor_id = ctx.data::<Viewer>()?.require_actor()?;
         let pool = ctx.data::<PgPool>()?;
         let post_id = parse_id(&id)?;
-        own_post_or_error(pool, post_id, actor_id).await?;
+        let existing = find_own_post(pool, post_id, actor_id).await?;
+
+        if existing.is_published() {
+            if let Some(permalink) = existing.ap_object_id.as_deref() {
+                let author = find_actor(pool, actor_id).await?;
+                if let Err(error) = delivery::enqueue_delete(pool, &author, permalink).await {
+                    tracing::error!(%error, post_id = %post_id, "failed to enqueue Delete activity");
+                }
+            }
+        }
 
         db::posts::delete(pool, post_id).await?;
         Ok(true)
@@ -130,7 +169,7 @@ impl Mutation {
         let pool = ctx.data::<PgPool>()?;
         let post_id = parse_id(&post_id)?;
         let media_id = parse_id(&media_id)?;
-        own_post_or_error(pool, post_id, actor_id).await?;
+        find_own_post(pool, post_id, actor_id).await?;
 
         db::media_attachments::attach_to_post(pool, media_id, post_id).await?;
         if let Some(alt_text) = alt_text {
@@ -177,18 +216,24 @@ impl Mutation {
     }
 }
 
-async fn own_post_or_error(
+async fn find_own_post(
     pool: &PgPool,
     post_id: Uuid,
     actor_id: Uuid,
-) -> async_graphql::Result<()> {
+) -> async_graphql::Result<Post> {
     let post = db::posts::find_by_id(pool, post_id)
         .await?
         .ok_or_else(|| async_graphql::Error::new("post not found"))?;
     if post.actor_id != actor_id {
         return Err(async_graphql::Error::new("not your post"));
     }
-    Ok(())
+    Ok(post)
+}
+
+async fn find_actor(pool: &PgPool, actor_id: Uuid) -> async_graphql::Result<db::actors::Actor> {
+    db::actors::find_by_id(pool, actor_id)
+        .await?
+        .ok_or_else(|| async_graphql::Error::new("actor not found"))
 }
 
 fn extension_for_content_type(content_type: &str) -> async_graphql::Result<&'static str> {

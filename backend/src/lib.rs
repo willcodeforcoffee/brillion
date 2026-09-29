@@ -2,6 +2,7 @@ pub mod cli;
 pub mod config;
 pub mod crypto;
 pub mod db;
+pub mod delivery;
 pub mod federation;
 pub mod graphql;
 pub mod markdown;

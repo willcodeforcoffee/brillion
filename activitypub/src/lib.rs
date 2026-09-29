@@ -14,6 +14,10 @@ pub mod urls;
 /// general-purpose JSON-LD expansion — see SPEC.md §3.6).
 pub const AS2_CONTEXT: &str = "https://www.w3.org/ns/activitystreams";
 
+/// The magic "public" addressee — an activity with this in `to` is
+/// visible to anyone, per the AS2/ActivityPub convention (SPEC.md §3.4).
+pub const AS2_PUBLIC: &str = "https://www.w3.org/ns/activitystreams#Public";
+
 #[cfg(test)]
 mod tests {
     use super::*;

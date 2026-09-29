@@ -4,7 +4,6 @@ use sqlx::PgExecutor;
 use uuid::Uuid;
 
 #[derive(Debug, sqlx::FromRow)]
-#[allow(dead_code)] // most fields aren't read until the actor/outbox routes land (phase 2/3)
 pub struct Actor {
     pub id: Uuid,
     /// The actor's own AS2 `id` URL — for local actors, always

@@ -51,6 +51,10 @@ async fn serve(port: u16, state: AppState) -> anyhow::Result<()> {
         tracing::warn!(%error, "could not ensure RustFS bucket exists at startup");
     }
 
+    // Outbound federation delivery (SPEC.md §3.4, §10/§12: in-process,
+    // no separate worker service) — drains `delivery_queue` forever.
+    tokio::spawn(brillion::delivery::run_worker(state.clone()));
+
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

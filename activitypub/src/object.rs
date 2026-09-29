@@ -1,9 +1,8 @@
 //! AS2 object types: `Person` (actor documents, §3.2), `Article`
-//! (posts, §3.5/§4.1), and the `OrderedCollection` shape used for
-//! followers/following/outbox (§3.3).
+//! (posts, §3.5/§4.1), `Tombstone` (deletes, §3.4/§3.5), and the
+//! `OrderedCollection` shape used for followers/following/outbox (§3.3).
 //!
-//! TODO(phase 3/4): `Note` (replies) and `Tombstone` (deletes) land
-//! with outbound federation.
+//! TODO(phase 4): `Note` (replies) lands with replies/likes/boosts.
 
 use crate::AS2_CONTEXT;
 use serde::{Deserialize, Serialize};
@@ -139,6 +138,25 @@ impl Article {
     }
 }
 
+/// The object referenced by an outbound `Delete` activity (SPEC.md
+/// §3.4/§3.5) — just enough for remote servers to know *which* object
+/// is gone; no `formerType`/`deleted` timestamp, which AS2 makes optional.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tombstone {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+impl Tombstone {
+    pub fn new(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            kind: "Tombstone".to_string(),
+        }
+    }
+}
+
 /// A non-paginated `OrderedCollection` — fine for followers/following at
 /// the scale a single-instance blog will see; outbox pagination lands
 /// with post volume in phase 3.
@@ -213,6 +231,14 @@ mod tests {
             "https://brillion.example.com/users/alice"
         );
         assert_eq!(json["content"], "<p>body</p>");
+    }
+
+    #[test]
+    fn tombstone_has_no_context_of_its_own() {
+        let tombstone = Tombstone::new("https://brillion.example.com/users/alice/hello-world");
+        let json = serde_json::to_value(&tombstone).unwrap();
+        assert_eq!(json["type"], "Tombstone");
+        assert!(json.get("@context").is_none());
     }
 
     #[test]

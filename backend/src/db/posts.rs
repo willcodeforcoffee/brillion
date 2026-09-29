@@ -12,7 +12,6 @@ pub struct Post {
     pub body_markdown: String,
     pub body_html: String,
     pub status: String,
-    #[allow(dead_code)] // populated once outbound federation (phase 3) exists
     pub ap_object_id: Option<String>,
     pub published_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -105,18 +104,23 @@ where
     Ok(post)
 }
 
-pub async fn publish<'e, E>(executor: E, post_id: Uuid) -> anyhow::Result<Post>
+/// `ap_object_id` (the post's permalink, also its AS2 object id — SPEC.md
+/// §3.4) is only ever set once: `coalesce` so re-publishing an
+/// already-published post (a no-op federation-wise — the caller checks
+/// this before enqueueing another `Create`) can't accidentally drift it.
+pub async fn publish<'e, E>(executor: E, post_id: Uuid, ap_object_id: &str) -> anyhow::Result<Post>
 where
     E: PgExecutor<'e>,
 {
     let post = sqlx::query_as::<_, Post>(
         "update posts set status = 'published', published_at = coalesce(published_at, now()),
-             updated_at = now()
+             ap_object_id = coalesce(ap_object_id, $2), updated_at = now()
          where id = $1
          returning id, actor_id, slug, title, summary, body_markdown, body_html,
              status, ap_object_id, published_at, created_at, updated_at",
     )
     .bind(post_id)
+    .bind(ap_object_id)
     .fetch_one(executor)
     .await?;
     Ok(post)
@@ -205,6 +209,28 @@ where
     .fetch_all(executor)
     .await?;
     Ok(posts)
+}
+
+/// `ap_object_id`s of an actor's published posts, newest first — for
+/// the outbox collection (SPEC.md §3.3). The Create activity id for
+/// each is derived from this (`{ap_object_id}#create`, see
+/// `crate::delivery`), so no separate activity-id storage is needed.
+pub async fn list_published_ap_ids<'e, E>(
+    executor: E,
+    actor_id: Uuid,
+) -> anyhow::Result<Vec<String>>
+where
+    E: PgExecutor<'e>,
+{
+    let ids: Vec<(String,)> = sqlx::query_as(
+        "select ap_object_id from posts
+         where actor_id = $1 and status = 'published' and ap_object_id is not null
+         order by published_at desc",
+    )
+    .bind(actor_id)
+    .fetch_all(executor)
+    .await?;
+    Ok(ids.into_iter().map(|(id,)| id).collect())
 }
 
 fn slugify(title: &str) -> String {

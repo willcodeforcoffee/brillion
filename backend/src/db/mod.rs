@@ -1,5 +1,6 @@
 pub mod activities_log;
 pub mod actors;
+pub mod delivery_queue;
 pub mod domain_blocks;
 pub mod follows;
 pub mod media_attachments;

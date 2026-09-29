@@ -1,7 +1,8 @@
-//! End-to-end test of inbound federation (SPEC.md §3.3): a mock remote
-//! actor sends a signed `Follow` to our real (in-process) server, we
-//! verify the signature, cache the remote actor, record the follow,
-//! and deliver a signed `Accept` back — then the same for `Undo`.
+//! End-to-end test of outbound federation (SPEC.md §3.4): a mock remote
+//! actor follows our real (in-process) server's local actor, who then
+//! publishes, edits, and deletes a post — verifying a real signed
+//! `Create`/`Update`/`Delete` arrives at the follower's inbox each time,
+//! and that the outbox collection reflects a published post.
 //!
 //! Requires a live, disposable Postgres database. Not run by default,
 //! and **do not run via `cargo test` with a `DATABASE_URL=...` shell
@@ -13,7 +14,7 @@
 //!
 //!   cargo build --workspace --tests
 //!   DATABASE_URL=postgres://user:pass@host/disposable_db \
-//!     ./target/debug/deps/inbox_federation-<hash> --ignored
+//!     ./target/debug/deps/outbox_federation-<hash> --ignored
 
 use activitypub::urls::ActorUrls;
 use axum::extract::State;
@@ -22,6 +23,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use brillion::config::Config;
 use brillion::db;
+use brillion::db::posts::{NewPost, PostEdit};
+use brillion::delivery;
 use brillion::state::AppState;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -61,7 +64,9 @@ async fn mock_inbox(State(remote): State<MockRemote>, Json(body): Json<Value>) -
 }
 
 /// Signs `body` as `signer` (a remote actor) and POSTs it to our
-/// server's inbox at `path`, returning the response.
+/// server's inbox at `path` — used here just to get bob's `Follow`
+/// accepted (and his actor cached) the same real way any remote
+/// follower would, before we test the outbound side.
 async fn send_signed_activity(
     client: &reqwest::Client,
     our_addr: std::net::SocketAddr,
@@ -100,14 +105,14 @@ async fn send_signed_activity(
 
 #[tokio::test]
 #[ignore = "requires a live, disposable Postgres — see module docs"]
-async fn follow_then_undo_round_trip() {
+async fn publish_edit_delete_deliver_to_a_follower() {
     let database_url = std::env::var("DATABASE_URL")
         .expect("set DATABASE_URL to a disposable test database before running this test");
 
     let pool = db::connect(&database_url).await.unwrap();
     db::run_migrations(&pool).await.unwrap();
 
-    // --- our server, bound to an ephemeral port ---------------------
+    // --- our server ("alice"), bound to an ephemeral port --------------
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let our_addr = listener.local_addr().unwrap();
     let public_base_url = format!("http://{our_addr}");
@@ -145,7 +150,7 @@ async fn follow_then_undo_round_trip() {
     .unwrap();
 
     let state = AppState::new(pool.clone(), config).unwrap();
-    let app = brillion::router::app(state);
+    let app = brillion::router::app(state.clone());
     tokio::spawn(async move {
         axum::serve(
             listener,
@@ -155,11 +160,7 @@ async fn follow_then_undo_round_trip() {
         .unwrap();
     });
 
-    // --- mock remote actor ("bob"), also in-process -------------------
-    // A unique username per run: `domain_of()` only extracts the host
-    // (127.0.0.1), not the ephemeral port, so re-running this test
-    // against the same persistent database would otherwise collide on
-    // actors' (preferred_username, domain) uniqueness.
+    // --- mock remote follower ("bob"), also in-process ------------------
     let mock_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mock_addr = mock_listener.local_addr().unwrap();
     let bob_username = format!("bob-{}", Uuid::new_v4().simple());
@@ -181,109 +182,119 @@ async fn follow_then_undo_round_trip() {
         axum::serve(mock_listener, mock_app).await.unwrap();
     });
 
+    // --- bob follows alice, the same real way any remote follower would
     let client = reqwest::Client::new();
-    let inbox_path = format!("/users/{username}/inbox");
-
-    // --- Follow -------------------------------------------------------
-    let follow_id = format!("{bob_ap_id}#follows/{}", Uuid::new_v4());
     let follow_body = json!({
         "@context": "https://www.w3.org/ns/activitystreams",
-        "id": follow_id,
+        "id": format!("{bob_ap_id}#follows/{}", Uuid::new_v4()),
         "type": "Follow",
         "actor": bob_ap_id,
         "object": alice.ap_id,
     });
-
     let response = send_signed_activity(
         &client,
         our_addr,
-        &inbox_path,
+        &format!("/users/{username}/inbox"),
         &bob_ap_id,
         &bob_keypair.private_key_pem,
         &follow_body,
     )
     .await;
     assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    received.lock().unwrap().clear(); // drop the Accept we just got sent
 
-    let (follow_state,): (String,) = sqlx::query_as(
-        "select f.state from follows f
-         join actors a on a.id = f.follower_actor_id
-         where a.ap_id = $1",
-    )
-    .bind(&bob_ap_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(follow_state, "accepted");
-
-    let received_after_follow = received.lock().unwrap().clone();
-    assert_eq!(
-        received_after_follow.len(),
-        1,
-        "expected one delivered Accept"
-    );
-    assert_eq!(received_after_follow[0]["type"], "Accept");
-    assert_eq!(received_after_follow[0]["object"]["type"], "Follow");
-    assert_eq!(received_after_follow[0]["object"]["actor"], bob_ap_id);
-
-    // --- Undo(Follow) --------------------------------------------------
-    let undo_body = json!({
-        "@context": "https://www.w3.org/ns/activitystreams",
-        "id": format!("{bob_ap_id}#undo/{}", Uuid::new_v4()),
-        "type": "Undo",
-        "actor": bob_ap_id,
-        "object": {
-            "id": follow_id,
-            "type": "Follow",
-            "actor": bob_ap_id,
-            "object": alice.ap_id,
+    // --- publish a post -------------------------------------------------
+    let post = db::posts::create(
+        &pool,
+        NewPost {
+            actor_id: alice.id,
+            title: "Hello, Fediverse",
+            summary: Some("a test post"),
+            body_markdown: "hello",
+            body_html: "<p>hello</p>",
         },
-    });
-    let response = send_signed_activity(
-        &client,
-        our_addr,
-        &inbox_path,
-        &bob_ap_id,
-        &bob_keypair.private_key_pem,
-        &undo_body,
     )
-    .await;
-    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
-
-    let (remaining,): (i64,) = sqlx::query_as(
-        "select count(*) from follows f
-         join actors a on a.id = f.follower_actor_id
-         where a.ap_id = $1",
-    )
-    .bind(&bob_ap_id)
-    .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(remaining, 0, "follow should be removed after Undo");
+    let permalink = format!("{public_base_url}/users/{username}/{}", post.slug);
+    let post = db::posts::publish(&pool, post.id, &permalink)
+        .await
+        .unwrap();
+    delivery::enqueue_create(&pool, &alice, &post)
+        .await
+        .unwrap();
+    delivery::process_due(&state).await.unwrap();
 
-    // --- replaying the original Follow must be a no-op (dedup) --------
-    let response = send_signed_activity(
-        &client,
-        our_addr,
-        &inbox_path,
-        &bob_ap_id,
-        &bob_keypair.private_key_pem,
-        &follow_body,
-    )
-    .await;
-    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
-
-    let (remaining,): (i64,) = sqlx::query_as(
-        "select count(*) from follows f
-         join actors a on a.id = f.follower_actor_id
-         where a.ap_id = $1",
-    )
-    .bind(&bob_ap_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        remaining, 0,
-        "replayed activity id must be deduped, not reprocessed"
+    let after_create = received.lock().unwrap().clone();
+    assert_eq!(after_create.len(), 1, "expected one delivered Create");
+    assert_eq!(after_create[0]["type"], "Create");
+    assert_eq!(after_create[0]["actor"], alice.ap_id);
+    assert_eq!(after_create[0]["object"]["type"], "Article");
+    assert_eq!(after_create[0]["object"]["id"], permalink);
+    assert_eq!(after_create[0]["object"]["name"], "Hello, Fediverse");
+    assert!(
+        after_create[0]["object"].get("@context").is_none(),
+        "embedded object shouldn't carry its own @context"
     );
+    received.lock().unwrap().clear();
+
+    // --- outbox reflects the published post ------------------------------
+    let outbox: Value = client
+        .get(format!("http://{our_addr}/users/{username}/outbox"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(outbox["totalItems"], 1);
+    assert_eq!(outbox["orderedItems"][0], format!("{permalink}#create"));
+
+    // --- edit the post: Update -------------------------------------------
+    let post = db::posts::update(
+        &pool,
+        post.id,
+        PostEdit {
+            title: "Hello, Fediverse (edited)",
+            summary: Some("a test post"),
+            body_markdown: "hello, edited",
+            body_html: "<p>hello, edited</p>",
+        },
+    )
+    .await
+    .unwrap();
+    delivery::enqueue_update(&pool, &alice, &post)
+        .await
+        .unwrap();
+    delivery::process_due(&state).await.unwrap();
+
+    let after_update = received.lock().unwrap().clone();
+    assert_eq!(after_update.len(), 1, "expected one delivered Update");
+    assert_eq!(after_update[0]["type"], "Update");
+    assert_eq!(
+        after_update[0]["object"]["name"],
+        "Hello, Fediverse (edited)"
+    );
+    received.lock().unwrap().clear();
+
+    // --- delete the post: Delete(Tombstone) -------------------------------
+    delivery::enqueue_delete(&pool, &alice, &permalink)
+        .await
+        .unwrap();
+    db::posts::delete(&pool, post.id).await.unwrap();
+    delivery::process_due(&state).await.unwrap();
+
+    let after_delete = received.lock().unwrap().clone();
+    assert_eq!(after_delete.len(), 1, "expected one delivered Delete");
+    assert_eq!(after_delete[0]["type"], "Delete");
+    assert_eq!(after_delete[0]["object"]["type"], "Tombstone");
+    assert_eq!(after_delete[0]["object"]["id"], permalink);
+
+    // --- every delivery ended up marked 'delivered' ------------------------
+    let (delivered_count,): (i64,) =
+        sqlx::query_as("select count(*) from delivery_queue where status = 'delivered'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(delivered_count, 3, "Create + Update + Delete all delivered");
 }

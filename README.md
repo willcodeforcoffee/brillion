@@ -5,8 +5,8 @@ server. See [`SPEC.md`](./SPEC.md) for the full design — domain model,
 federation protocol, GraphQL API, OAuth provider, media storage, and the
 phased build plan.
 
-Status: **phase 1** (local-only blog) and **phase 2** (federation
-inbound) are both done. Posts (CRUD + publish, Markdown → sanitized
+Status: **phases 1-3** are done — local-only blog, federation inbound,
+and federation outbound. Posts (CRUD + publish, Markdown → sanitized
 HTML), the GraphQL API (Apollo-ready schema — `me`/`post`/`posts`/
 `actor`, `createPost`/`updatePost`/`publishPost`/`deletePost`,
 `requestImageUpload`/`attachImage`/`updateActorImage`), a self-hosted
@@ -19,15 +19,24 @@ and RustFS. WebFinger, actor documents, inbox
 (`Follow`/`Accept`/`Undo` with HTTP Signature verification and rate
 limiting), and followers/following collections work against real
 Postgres and a mock remote server (`backend/tests/inbox_federation.rs`).
-The React SPA is now wired to the real backend (Apollo Client, OAuth
-PKCE login, post editor, admin user list, settings) — see "Frontend"
-below. Local dev runs `backend` on the host with `postgres`/`rustfs`/
-`proxy` (Caddy) in Docker Compose — Caddy is still needed even so,
-since presigned image upload requires it (RustFS isn't published to the
-host outside the proxy) — see "Full stack" below.
-RustFS's bucket still isn't actually public-read in practice (a real,
-verified gap — see `backend/src/media.rs`). Phases 3-4 (outbound
-federation, replies/likes/announces) haven't started.
+Federation-outbound (publishing/editing/deleting a post delivers a
+signed `Create`/`Update`/`Delete` to every follower's inbox, retried
+with backoff via an in-process `delivery_queue` worker, real outbox
+collection) works the same way, verified against real Postgres and a
+mock remote server (`backend/tests/outbox_federation.rs`) — see
+"Outbound federation" below. The React SPA is wired to the real backend
+(Apollo Client, OAuth PKCE login, post editor, admin user list,
+settings) — see "Frontend" below. Local dev runs `backend` on the host
+with `postgres`/`rustfs`/`proxy` (Caddy) in Docker Compose — Caddy is
+still needed even so, since presigned image upload requires it (RustFS
+isn't published to the host outside the proxy) — see "Full stack"
+below. RustFS's bucket still isn't actually public-read in practice (a
+real, verified gap — see `backend/src/media.rs`). **Known simplification
+in outbound federation:** only followers get delivered to — `@mentions`
+in a post body aren't resolved/delivered to yet (needs an outbound
+WebFinger client that doesn't exist; see `backend/src/delivery.rs`).
+Phase 4 (replies/likes/announces both directions, timeline merging)
+hasn't started.
 
 ## Layout
 
@@ -77,18 +86,57 @@ actor's RSA keypair, and inserts the user + actor in one transaction —
 verified end-to-end against a real Postgres, including that a failure
 (e.g. duplicate email) rolls back cleanly with no orphaned actor row.
 
-Federation (WebFinger, actor documents, inbox, followers/following) is
-covered by `backend/tests/inbox_federation.rs`, an in-process
-integration test: it spins up the real router plus a mock remote actor
-on ephemeral ports, sends a genuinely signed `Follow`, and asserts the
-signature verifies, the actor gets cached, the follow is recorded, a
-signed `Accept` is delivered back, `Undo` removes it, and a replayed
-activity id is deduped. Skipped by default (no DB in CI); run with:
+Federation-inbound (WebFinger, actor documents, inbox,
+followers/following) is covered by `backend/tests/inbox_federation.rs`,
+an in-process integration test: it spins up the real router plus a mock
+remote actor on ephemeral ports, sends a genuinely signed `Follow`, and
+asserts the signature verifies, the actor gets cached, the follow is
+recorded, a signed `Accept` is delivered back, `Undo` removes it, and a
+replayed activity id is deduped.
+
+Both federation integration tests are skipped by default (no DB in CI,
+and `#[ignore]`d). **Run the
+compiled binary directly, not `cargo test`** — this repo uses mise, and
+`cargo` is a shim that silently discards a shell `DATABASE_URL=...`
+override in favor of `.env`'s real one, so `cargo test` here would
+write test data into your real database instead of the disposable one
+(this happened for real once — see `CLAUDE.md`):
 
 ```sh
-DATABASE_URL=postgres://user:pass@host/db \
-  cargo test -p brillion --test inbox_federation -- --ignored
+cargo build --workspace --tests
+DATABASE_URL=postgres://user:pass@host/disposable_db \
+  ./target/debug/deps/inbox_federation-<hash> --ignored   # find <hash> via: ls target/debug/deps | grep inbox_federation
+DATABASE_URL=postgres://user:pass@host/disposable_db \
+  ./target/debug/deps/outbox_federation-<hash> --ignored
 ```
+
+## Outbound federation
+
+Publishing, editing, or deleting a post (SPEC.md §3.4) builds a signed
+`Create`/`Update`/`Delete` activity and enqueues one `delivery_queue`
+row per accepted follower's inbox — `backend/src/delivery.rs`. A
+background Tokio task inside `backend` itself drains the queue every
+10 seconds (`§10`/`§12`: in-process, no separate worker service), with
+exponential backoff (1m/5m/30m/2h) and a terminal `failed` state after
+5 attempts. `GET /users/:username/outbox` reflects real published posts
+(`backend/src/routes/collections.rs`), each item's activity id derived
+as `{post's permalink}#create` rather than stored separately.
+
+Verified end-to-end against a real Postgres and a mock remote follower
+(`backend/tests/outbox_federation.rs`, see above) — the signed
+`Create`/`Update`/`Delete` bodies, the outbox collection contents, and
+the `delivery_queue` rows all ending up `delivered` are all asserted
+against the real thing, not mocked internals. Also smoke-tested through
+the real GraphQL API against the real database with a throwaway user
+(create → publish → edit → delete), confirming `ap_object_id` gets set
+correctly and no delivery is attempted for a post with zero followers.
+
+**Known simplification, not an oversight:** delivery only reaches
+followers. SPEC.md §3.4 also calls for delivering to actors `@mentioned`
+in a post body — that needs an outbound WebFinger *client* to resolve
+arbitrary `@user@domain` handles to an actor, which doesn't exist
+anywhere in this codebase yet (only the inbound WebFinger *responder*,
+`routes::webfinger`, does). Left for a follow-up.
 
 ## GraphQL, OAuth, images, pages, feeds
 

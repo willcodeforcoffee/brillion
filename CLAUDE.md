@@ -27,14 +27,18 @@ changing it. Current section map:
 The project is being built in the phases listed in §13, but not strictly
 in order — phase 2 (federation inbound) was implemented before the rest
 of phase 1, since it turned out to depend only on actors, not posts.
-**Current state: phases 1 and 2 are both done.** Users/actors, posts
+**Current state: phases 1-3 are done.** Users/actors, posts
 (CRUD + publish, Markdown → sanitized HTML), the GraphQL API, a
 self-hosted OAuth 2.0 provider (PKCE), RustFS image upload, the
 server-rendered public pages, and RSS/Atom feeds are all implemented
 and verified end-to-end against real Postgres (and RustFS, for images)
 — not just unit-tested. So is federation-inbound (WebFinger, actor
 documents, inbox receiving `Follow`/`Accept`/`Undo` with signature
-verification and rate limiting, followers/following). The React SPA is
+verification and rate limiting, followers/following) and
+federation-outbound (`Create`/`Update`/`Delete` delivered to followers
+on publish/edit/delete, with retry/backoff via an in-process
+`delivery_queue` worker — `backend/src/delivery.rs`,
+`backend/tests/outbox_federation.rs`; SPEC.md §3.4). The React SPA is
 now wired to the real backend too (Apollo Client, OAuth PKCE login,
 post editor, admin, settings) — verified in a real Chrome browser, not
 just typechecked. Local dev now runs the backend on the host (`cargo run
@@ -53,9 +57,11 @@ check out consistently) but showed intermittent `503`s specifically
 through this session's browser-automation tool on the identical URLs
 that succeed every time outside it — see `MediaStore::presign_upload`'s
 doc comment before assuming either "it's fixed" or "it's still broken"
-without testing in an ordinary browser yourself. Phases 3-4 (outbound
-federation beyond the auto-`Accept`, replies/likes/announces) haven't
-started.
+without testing in an ordinary browser yourself. Outbound federation's
+own known gap: delivery only reaches followers, not `@mentioned`
+actors (needs an outbound WebFinger client that doesn't exist yet — see
+`backend/src/delivery.rs`). Phase 4 (replies/likes/announces both
+directions, timeline merging) hasn't started.
 
 ## Layout
 
@@ -312,6 +318,17 @@ the host `cargo run -- serve` process, and `docker compose up --build`.
   exported, `.env` keys included. To override one of `.env`'s own keys
   for a one-off `cargo`/`npm` invocation, edit `.env` itself (or
   temporarily rename it) rather than exporting in the shell.
+  **This bit a real `DATABASE_URL` override for the `#[ignore]`d
+  integration tests** (`inbox_federation.rs`, `outbox_federation.rs`) —
+  `DATABASE_URL=postgres://.../disposable_db cargo test ... -- --ignored`
+  silently ran against `.env`'s real `DATABASE_URL` instead, writing
+  test rows into the real database. **Run the compiled test binary
+  directly** to actually get an isolated run:
+  `DATABASE_URL=postgres://.../disposable_db ./target/debug/deps/<test_name>-<hash> --ignored`
+  (find the exact binary name via `ls target/debug/deps/ | grep <test_name>`,
+  after a `cargo build --workspace --tests` to make sure it's current) —
+  and verify afterward with a query against the *real* database, not
+  just the disposable one, that nothing unexpected landed there.
 - **`Dockerfile`'s builder and runtime stages must share a Debian
   release, or the binary won't start.** Hit this for real: the builder
   used to be `lukemathwalker/cargo-chef:latest-rust-1` (a floating tag),
@@ -407,3 +424,36 @@ the host `cargo run -- serve` process, and `docker compose up --build`.
   via `FRONTEND_ORIGIN`) only needs to cover `/graphql`, `/oauth/token`,
   and `/api/v1/apps` — never `/oauth/authorize` itself, since that's a
   real browser navigation, not a cross-origin fetch.
+- **Outbound activity ids are derived, never stored** (`backend/src/delivery.rs`):
+  a post's `ap_object_id` (its permalink, set once at first publish —
+  `db::posts::publish`'s `coalesce`) is the only federation identity
+  actually persisted. `Create`'s id is always `{permalink}#create`
+  (stable — the outbox route derives the same string to list a post's
+  activity, `db::posts::list_published_ap_ids` + `#create` in
+  `routes::collections::outbox`, rather than reading a separate
+  activities table). `Update`/`Delete` ids embed a timestamp
+  (`{permalink}#update-{unix ts}` / `#delete-{unix ts}`) since those
+  need to be unique per edit/delete event, unlike `Create` which only
+  ever happens once per post.
+- **Embedded objects inside `Create`/`Update` drop their own `@context`**
+  (`delivery::article_json` strips it from the serialized `Article`
+  before embedding) — nested `@context` is legal JSON-LD but pointless
+  noise once the wrapping activity already declares one. `Tombstone`
+  (used in `Delete`) never had one to begin with — see its doc comment.
+- **`delivery_queue` has no `'in_progress'` status** — `db::delivery_queue::claim_due`
+  instead gives a claimed row a 5-minute lease by pushing
+  `next_attempt_at` forward, then `mark_delivered`/`mark_failed`
+  corrects it. If the worker crashes mid-delivery, the lease just
+  expires and the next tick retries — no separate crash-recovery path
+  needed. Uses `FOR UPDATE SKIP LOCKED` so this stays correct if
+  `run_worker` is ever scaled beyond the current single in-process task
+  (§10/§12: no separate `worker` service, at least until delivery
+  volume warrants it).
+- **A real `DATABASE_URL=... cargo test ...` override silently no-ops**
+  in this repo (mise shim, see the `mise` gotcha above) — bit outbound
+  federation testing for real: an `#[ignore]`d integration test run
+  believed to target a disposable database actually wrote rows into the
+  real one. Always run these via the compiled binary directly (see the
+  doc comment atop `inbox_federation.rs`/`outbox_federation.rs`), and
+  verify against the *real* database afterward that nothing unexpected
+  landed there — don't just trust that the override worked.

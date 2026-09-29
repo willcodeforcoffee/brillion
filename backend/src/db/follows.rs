@@ -78,6 +78,30 @@ where
     Ok(ap_ids.into_iter().map(|(id,)| id).collect())
 }
 
+/// Inbox URLs of `followee_actor_id`'s accepted followers — for
+/// enqueueing outbound `Create`/`Update`/`Delete` deliveries (SPEC.md
+/// §3.4). `distinct` because a remote server could theoretically be
+/// reachable at the same inbox URL for more than one of our followers
+/// only in degenerate cases, but it's a cheap guard against
+/// double-delivery either way.
+pub async fn follower_inbox_urls<'e, E>(
+    executor: E,
+    followee_actor_id: Uuid,
+) -> anyhow::Result<Vec<String>>
+where
+    E: PgExecutor<'e>,
+{
+    let urls: Vec<(String,)> = sqlx::query_as(
+        "select distinct a.inbox_url from follows f
+         join actors a on a.id = f.follower_actor_id
+         where f.followee_actor_id = $1 and f.state = 'accepted'",
+    )
+    .bind(followee_actor_id)
+    .fetch_all(executor)
+    .await?;
+    Ok(urls.into_iter().map(|(u,)| u).collect())
+}
+
 /// AS2 `id` URLs of actors `follower_actor_id` is following — for the
 /// `following` collection (SPEC.md §3.3).
 pub async fn following_ap_ids<'e, E>(

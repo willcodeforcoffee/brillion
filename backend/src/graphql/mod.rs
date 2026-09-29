@@ -6,6 +6,7 @@ mod mutation;
 mod query;
 pub mod types;
 
+use crate::config::Config;
 use crate::db;
 use crate::media::MediaStore;
 use async_graphql::{EmptySubscription, Schema};
@@ -17,10 +18,11 @@ use uuid::Uuid;
 
 pub type BrillionSchema = Schema<Query, Mutation, EmptySubscription>;
 
-pub fn build_schema(pool: PgPool, media: MediaStore) -> BrillionSchema {
+pub fn build_schema(pool: PgPool, media: MediaStore, config: Config) -> BrillionSchema {
     Schema::build(Query, Mutation, EmptySubscription)
         .data(pool)
         .data(media)
+        .data(config)
         .finish()
 }
 

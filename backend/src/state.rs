@@ -22,7 +22,7 @@ impl AppState {
             config.s3_access_key.clone(),
             config.s3_secret_key.clone(),
         )?;
-        let graphql_schema = graphql::build_schema(pool.clone(), media.clone());
+        let graphql_schema = graphql::build_schema(pool.clone(), media.clone(), config.clone());
         Ok(Self {
             pool,
             config,

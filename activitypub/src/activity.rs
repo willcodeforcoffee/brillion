@@ -2,8 +2,7 @@
 //! as raw JSON, since its shape depends on `type`); outbound activities
 //! we send ourselves are built with the concrete constructors below.
 //!
-//! TODO(phase 3/4): `Create`/`Update`/`Delete`/`Like`/`Announce` land
-//! with posts/replies/outbound federation.
+//! TODO(phase 4): `Like`/`Announce` land with replies/likes/boosts.
 
 use crate::AS2_CONTEXT;
 use serde::{Deserialize, Serialize};
@@ -52,6 +51,126 @@ impl Accept {
     }
 }
 
+/// Builds an outbound `Create` wrapping `object` (an embedded AS2
+/// object, e.g. an `Article` for a newly published post) — SPEC.md
+/// §3.4. `object` should *not* carry its own `@context` — nested
+/// contexts are technically legal JSON-LD but unnecessary noise here,
+/// so callers strip it before passing the value in (see
+/// `backend::delivery`).
+#[derive(Debug, Clone, Serialize)]
+pub struct Create {
+    #[serde(rename = "@context")]
+    pub context: String,
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub actor: String,
+    pub published: String,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub object: Value,
+}
+
+impl Create {
+    pub fn new(
+        id: String,
+        actor: &str,
+        published: String,
+        to: Vec<String>,
+        cc: Vec<String>,
+        object: Value,
+    ) -> Self {
+        Self {
+            context: AS2_CONTEXT.to_string(),
+            id,
+            kind: "Create".to_string(),
+            actor: actor.to_string(),
+            published,
+            to,
+            cc,
+            object,
+        }
+    }
+}
+
+/// Builds an outbound `Update` — same shape as `Create`, sent when an
+/// already-published post is edited (SPEC.md §3.4). A distinct type
+/// (rather than reusing `Create`) because that's what the AS2 vocabulary
+/// calls for and what remote servers key their handling on.
+#[derive(Debug, Clone, Serialize)]
+pub struct Update {
+    #[serde(rename = "@context")]
+    pub context: String,
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub actor: String,
+    pub published: String,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub object: Value,
+}
+
+impl Update {
+    pub fn new(
+        id: String,
+        actor: &str,
+        published: String,
+        to: Vec<String>,
+        cc: Vec<String>,
+        object: Value,
+    ) -> Self {
+        Self {
+            context: AS2_CONTEXT.to_string(),
+            id,
+            kind: "Update".to_string(),
+            actor: actor.to_string(),
+            published,
+            to,
+            cc,
+            object,
+        }
+    }
+}
+
+/// Builds an outbound `Delete` wrapping a `Tombstone` (SPEC.md §3.4/§3.5),
+/// sent when a published post is deleted.
+#[derive(Debug, Clone, Serialize)]
+pub struct Delete {
+    #[serde(rename = "@context")]
+    pub context: String,
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub actor: String,
+    pub published: String,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub object: Value,
+}
+
+impl Delete {
+    pub fn new(
+        id: String,
+        actor: &str,
+        published: String,
+        to: Vec<String>,
+        cc: Vec<String>,
+        object: Value,
+    ) -> Self {
+        Self {
+            context: AS2_CONTEXT.to_string(),
+            id,
+            kind: "Delete".to_string(),
+            actor: actor.to_string(),
+            published,
+            to,
+            cc,
+            object,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,5 +206,38 @@ mod tests {
         assert_eq!(json["type"], "Accept");
         assert_eq!(json["object"]["type"], "Follow");
         assert_eq!(json["object"]["actor"], "https://remote.example/users/bob");
+    }
+
+    #[test]
+    fn builds_a_create_wrapping_an_object() {
+        let create = Create::new(
+            "https://brillion.example.com/users/alice/hello#create".to_string(),
+            "https://brillion.example.com/users/alice",
+            "2026-01-01T00:00:00Z".to_string(),
+            vec![crate::AS2_PUBLIC.to_string()],
+            vec!["https://brillion.example.com/users/alice/followers".to_string()],
+            serde_json::json!({"type": "Article", "id": "https://brillion.example.com/users/alice/hello"}),
+        );
+
+        let json = serde_json::to_value(&create).unwrap();
+        assert_eq!(json["type"], "Create");
+        assert_eq!(json["to"][0], crate::AS2_PUBLIC);
+        assert_eq!(json["object"]["type"], "Article");
+    }
+
+    #[test]
+    fn builds_a_delete_wrapping_a_tombstone() {
+        let delete = Delete::new(
+            "https://brillion.example.com/users/alice/hello#delete-1".to_string(),
+            "https://brillion.example.com/users/alice",
+            "2026-01-02T00:00:00Z".to_string(),
+            vec![crate::AS2_PUBLIC.to_string()],
+            vec![],
+            serde_json::json!({"type": "Tombstone", "id": "https://brillion.example.com/users/alice/hello"}),
+        );
+
+        let json = serde_json::to_value(&delete).unwrap();
+        assert_eq!(json["type"], "Delete");
+        assert_eq!(json["object"]["type"], "Tombstone");
     }
 }
